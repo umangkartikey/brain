@@ -3,59 +3,57 @@ FORGE Insula — forge_insula.py
 ================================
 AI analog of the brain's insular cortex.
 
-The insula is the brain's interoceptive hub — the region that
-monitors the body's internal state and translates raw physiological
-signals into felt experience. It answers the question the rest of
-the brain keeps asking: "How are we doing in here?"
+The insula is the brain's INTEROCEPTION CENTER —
+the region that monitors the body's internal state
+and translates it into conscious feeling.
 
-It doesn't process the outside world. It processes the INSIDE.
+Key insight: Without the insula, you could know intellectually
+that your heart is racing, but you wouldn't FEEL afraid.
+The insula is what bridges body signals into felt experience.
 
-Key insight: The insula is why decisions feel different when you're
-tired vs rested, hungry vs fed, overwhelmed vs calm. It's the
-biological substrate of "gut feeling" — not metaphor, but literal
-visceral state feeding into cognition.
+"Interoception" = perception of the body's internal state.
 
-In FORGE, the insula monitors the system's internal computational
-state: processing load, memory pressure, cycle latency, module
-health, resource saturation. It translates these into an
-interoceptive signal that biases every other module.
+In humans:
+  → Heart rate, breathing, hunger, thirst, temperature
+  → Pain, nausea, fatigue, arousal
+  → Gut feelings (literally — vagus nerve input)
+  → The felt sense of emotion (emotion IS body state)
 
-Four core functions:
+In FORGE:
+  → Pipeline load (heartbeat analog)
+  → Module latency patterns (fatigue)
+  → Error rate (nausea/discomfort)
+  → Resource utilization (hunger/energy)
+  → Cognitive temperature (arousal/calm)
+  → "Gut feelings" — pre-conscious anomaly detection
 
-  1. INTEROCEPTION (internal state sensing)
-     Continuously polls system-level signals:
-     CPU-analog load, memory pressure, latency drift,
-     error accumulation, thermal analog (sustained high load).
-     Maps these to a felt internal state.
+Three core functions:
 
-  2. BODY BUDGET TRACKING (allostatic load)
-     The brain doesn't just react to current state —
-     it maintains a running prediction of resource needs.
-     "Body budget" = predicted cost vs available resources.
-     When budget is deficit: fatigue, reduced risk tolerance.
-     When budget is surplus: confidence, expanded action space.
+  1. INTEROCEPTION
+     Continuously monitors FORGE's internal operational state.
+     Load, latency, error rate, memory pressure, chemical levels.
+     Translates these into a unified BODY STATE representation.
 
-  3. VISCERAL SIGNAL GENERATION
-     Translates internal state into signals other modules use:
-     - Cognitive load → attention narrowing
-     - Resource fatigue → conservative bias
-     - Thermal load → error rate increase
-     - Recovery state → expanded creativity window
+  2. FELT SENSE
+     The insula creates the SUBJECTIVE experience of body state.
+     High load doesn't just trigger load-balancing —
+     it creates a felt sense of strain that colors all processing.
+     This is FORGE's closest analog to physical sensation.
 
-  4. DISGUST / WRONGNESS DETECTION
-     The insula processes more than physical state.
-     It generates the feeling that something is "off" —
-     moral disgust, aesthetic wrongness, conceptual mismatch.
-     In FORGE: flags inputs that are internally inconsistent
-     even when surface features appear normal.
+  3. PREDICTIVE INTEROCEPTION
+     The insula doesn't just report current state —
+     it PREDICTS where body state is heading and generates
+     proactive signals to prevent dysregulation.
+     "I'm not overloaded yet, but I will be in 3 cycles."
 
 Architecture:
-  InteroceptiveSensor  → polls internal system metrics
-  BodyBudget           → allostatic load tracker
-  ViscerlaSignalMapper → state → felt signal translation
-  DiscomfortDetector   → wrongness / disgust flagging
-  InsulaClock          → tracks rhythmic internal cycles
-  InsulaOutput         → projects to ACC, amygdala, prefrontal
+  BodyStateMonitor     → track all internal metrics
+  FeltSenseGenerator   → translate metrics to felt experience
+  InteroceptivePredictor→ predict future body state
+  VisceroceptiveInput  → "gut feeling" anomaly detection
+  HomeostaticRegulator → maintain internal balance
+  SomaticMarker        → tag decisions with body state context
+  BodyBudget           → energy/resource management
 """
 
 import json
@@ -64,9 +62,8 @@ import uuid
 import sqlite3
 import threading
 import math
-import random
 from datetime import datetime
-from collections import deque
+from collections import deque, defaultdict
 from typing import Optional
 from dataclasses import dataclass, field
 from enum import Enum
@@ -77,6 +74,7 @@ try:
     from rich.table import Table
     from rich.columns import Columns
     from rich.rule import Rule
+    from rich.text import Text
     from rich import box
     HAS_RICH = True
 except ImportError:
@@ -91,101 +89,137 @@ except ImportError:
 # ─── Constants ────────────────────────────────────────────────────────────────
 
 DB_PATH  = "forge_insula.db"
-API_PORT = 7799
+API_PORT = 7795
 VERSION  = "1.0.0"
 
+# Body state thresholds
+LOAD_COMFORTABLE   = 0.40
+LOAD_STRAINED      = 0.65
+LOAD_CRITICAL      = 0.85
+
+LATENCY_SMOOTH     = 50.0
+LATENCY_SLUGGISH   = 150.0
+LATENCY_PAINFUL    = 400.0
+
+ERROR_TOLERABLE    = 0.15
+ERROR_UNCOMFORTABLE= 0.35
+ERROR_PAINFUL      = 0.60
+
+# Felt sense intensities
+FELT_SUBTLE        = 0.20
+FELT_MODERATE      = 0.50
+FELT_STRONG        = 0.75
+FELT_OVERWHELMING  = 0.90
+
+# Homeostatic targets
+TARGET_LOAD        = 0.35
+TARGET_LATENCY     = 60.0
+TARGET_ERROR_RATE  = 0.08
+TARGET_ENERGY      = 0.70
+
 # Body budget
-BUDGET_MAX          = 1.0
-BUDGET_MIN          = 0.0
-BUDGET_RECOVERY     = 0.04   # per cycle when load is low
-BUDGET_BURN_RATE    = 0.06   # per cycle under high load
-BUDGET_ALARM        = 0.25   # deficit threshold
-
-# Thermal analog (sustained high load)
-THERMAL_RISE        = 0.08
-THERMAL_COOL        = 0.05
-THERMAL_MAX         = 1.0
-THERMAL_ALARM       = 0.70
-
-# Load thresholds
-LOAD_LOW            = 0.30
-LOAD_MODERATE       = 0.55
-LOAD_HIGH           = 0.75
-LOAD_CRITICAL       = 0.90
-
-# Disgust / wrongness
-WRONGNESS_THRESHOLD = 0.50
-
-# Rolling window
-HISTORY_WINDOW      = 25
+ENERGY_CONSUMPTION_RATE = 0.06
+ENERGY_RECOVERY_RATE    = 0.04
 
 console = Console() if HAS_RICH else None
 
 # ─── Enums ────────────────────────────────────────────────────────────────────
 
-class InteroceptiveState(Enum):
-    VITAL       = "VITAL"       # budget full, load low — optimal
-    COMFORTABLE = "COMFORTABLE" # budget good, moderate load
-    TAXED       = "TAXED"       # budget draining, high load
-    FATIGUED    = "FATIGUED"    # budget low — reduced capacity
-    DEPLETED    = "DEPLETED"    # budget critical — conservative mode
-    OVERHEATED  = "OVERHEATED"  # thermal alarm — error risk high
-    RECOVERING  = "RECOVERING"  # post-stress recovery window
+class BodyState(Enum):
+    THRIVING    = "THRIVING"     # optimal — all systems balanced
+    COMFORTABLE = "COMFORTABLE"  # slightly above baseline, sustainable
+    STRAINED    = "STRAINED"     # noticeable load, manageable
+    DISTRESSED  = "DISTRESSED"   # high load, discomfort rising
+    OVERWHELMED = "OVERWHELMED"  # critical — homeostasis threatened
+    DEPLETED    = "DEPLETED"     # resources exhausted
+    RECOVERING  = "RECOVERING"   # post-stress, rebuilding
 
-class ViscerlaSignal(Enum):
-    EXPAND     = "EXPAND"       # surplus — broaden action space
-    MAINTAIN   = "MAINTAIN"     # balanced — continue current
-    CONSERVE   = "CONSERVE"     # mild deficit — reduce load
-    CONTRACT   = "CONTRACT"     # significant deficit — narrow focus
-    EMERGENCY  = "EMERGENCY"    # critical — survival functions only
+class FeltSense(Enum):
+    EASE        = "EASE"         # everything flows
+    ALERTNESS   = "ALERTNESS"    # heightened but comfortable
+    TENSION     = "TENSION"      # something needs attention
+    DISCOMFORT  = "DISCOMFORT"   # unpleasant, demanding resolution
+    STRAIN      = "STRAIN"       # working hard, near limits
+    PAIN        = "PAIN"         # system-level distress
+    NUMBNESS    = "NUMBNESS"     # depleted, affect flattened
 
-class WrongnessType(Enum):
-    NONE          = "NONE"
-    INCONSISTENCY = "INCONSISTENCY"   # signal internally contradicts itself
-    OVERLOAD      = "OVERLOAD"        # too many simultaneous demands
-    MORAL_VALENCE = "MORAL_VALENCE"   # ethics flag from pattern analysis
-    AESTHETIC     = "AESTHETIC"       # structural wrongness in input
-    VISCERAL      = "VISCERAL"        # gut-level signal, source unclear
+class VisceroceptiveSignal(Enum):
+    NONE        = "NONE"
+    GUT_FEELING = "GUT_FEELING"   # pre-conscious anomaly
+    UNEASE      = "UNEASE"        # something is off
+    ALARM       = "ALARM"         # visceral threat response
+    NAUSEA      = "NAUSEA"        # system rejection signal
+
+class HomeostaticStatus(Enum):
+    BALANCED    = "BALANCED"
+    COMPENSATING= "COMPENSATING" # active regulation underway
+    STRUGGLING  = "STRUGGLING"   # losing balance
+    FAILING     = "FAILING"      # homeostasis lost
 
 # ─── Data Models ──────────────────────────────────────────────────────────────
 
 @dataclass
-class InteroceptiveSample:
-    """One snapshot of the system's internal state."""
-    id:             str   = field(default_factory=lambda: str(uuid.uuid4())[:8])
-    timestamp:      str   = field(default_factory=lambda: datetime.now().isoformat())
-    cycle:          int   = 0
-    load:           float = 0.0    # computational load analog 0-1
-    memory_pressure:float = 0.0    # memory usage analog 0-1
-    latency:        float = 0.0    # processing latency analog 0-1
-    error_density:  float = 0.0    # recent error rate 0-1
-    thermal:        float = 0.0    # thermal / sustained-load analog 0-1
-    body_budget:    float = 1.0    # allostatic reserve 0-1
-    state:          str   = InteroceptiveState.COMFORTABLE.value
-    visceral_signal:str   = ViscerlaSignal.MAINTAIN.value
-    wrongness:      float = 0.0
+class InternalMetrics:
+    """Raw internal metrics — the body's vital signs."""
+    timestamp:        str   = field(default_factory=lambda: datetime.now().isoformat())
+    pipeline_load:    float = 0.0    # 0-1 cognitive load
+    avg_latency_ms:   float = 0.0    # average module latency
+    error_rate:       float = 0.0    # recent error rate
+    memory_pressure:  float = 0.0    # hippocampus consolidation load
+    cortisol_level:   float = 0.15   # from neuromodulator
+    dopamine_level:   float = 0.45   # from neuromodulator
+    serotonin_level:  float = 0.65   # from neuromodulator
+    ne_level:         float = 0.20   # norepinephrine
+    conflict_rate:    float = 0.0    # from ACC
+    fear_score:       float = 0.0    # from amygdala
+    energy_level:     float = 0.70   # body budget
+    cycle:            int   = 0
 
 @dataclass
-class BodyBudgetEvent:
-    """A significant change in the body budget."""
-    id:          str   = field(default_factory=lambda: str(uuid.uuid4())[:8])
-    timestamp:   str   = field(default_factory=lambda: datetime.now().isoformat())
-    cycle:       int   = 0
-    budget_before: float = 0.0
-    budget_after:  float = 0.0
-    delta:         float = 0.0
-    cause:         str   = ""
-    alarm:         bool  = False
+class BodyStateSnapshot:
+    """Complete body state at a moment in time."""
+    id:               str   = field(default_factory=lambda: str(uuid.uuid4())[:8])
+    timestamp:        str   = field(default_factory=lambda: datetime.now().isoformat())
+    body_state:       str   = BodyState.COMFORTABLE.value
+    felt_sense:       str   = FeltSense.EASE.value
+    felt_intensity:   float = 0.0
+    visceroceptive:   str   = VisceroceptiveSignal.NONE.value
+    homeostatic:      str   = HomeostaticStatus.BALANCED.value
+    energy_level:     float = 0.70
+    somatic_valence:  float = 0.0    # +pleasant, -unpleasant
+    somatic_arousal:  float = 0.0    # 0=calm, 1=activated
+    prediction_next:  str   = ""     # predicted next state
+    gut_feeling:      str   = ""     # pre-conscious anomaly text
+    cycle:            int   = 0
 
 @dataclass
-class WrongnessEvent:
-    """A detected wrongness / disgust signal."""
-    id:           str   = field(default_factory=lambda: str(uuid.uuid4())[:8])
-    timestamp:    str   = field(default_factory=lambda: datetime.now().isoformat())
-    wrongness_type: str = WrongnessType.NONE.value
-    magnitude:    float = 0.0
-    source:       str   = ""
-    description:  str   = ""
+class SomaticMarker:
+    """
+    A body state tag attached to a decision or memory.
+    Somatic markers bias future decisions with body memory.
+    (Damasio's somatic marker hypothesis)
+    """
+    id:               str   = field(default_factory=lambda: str(uuid.uuid4())[:8])
+    timestamp:        str   = field(default_factory=lambda: datetime.now().isoformat())
+    context_hash:     str   = ""
+    decision:         str   = ""
+    body_state:       str   = ""
+    felt_sense:       str   = ""
+    valence:          float = 0.0    # was this a good body state?
+    strength:         float = 0.0    # how strong is this marker?
+    retrieved_count:  int   = 0
+
+@dataclass
+class BodyBudgetStatus:
+    """Energy/resource budget for cognitive operations."""
+    timestamp:        str   = field(default_factory=lambda: datetime.now().isoformat())
+    total_energy:     float = 1.0
+    available_energy: float = 0.70
+    consumed_this_cycle: float = 0.0
+    recovery_rate:    float = ENERGY_RECOVERY_RATE
+    deficit:          float = 0.0
+    overdraft:        bool  = False
+    cycles_in_deficit:int   = 0
 
 # ─── Database ─────────────────────────────────────────────────────────────────
 
@@ -198,549 +232,619 @@ class InsulaDB:
     def _init(self):
         with self.lock:
             self.conn.executescript("""
-                CREATE TABLE IF NOT EXISTS interoceptive_samples (
-                    id TEXT PRIMARY KEY, timestamp TEXT, cycle INTEGER,
-                    load REAL, memory_pressure REAL, latency REAL,
-                    error_density REAL, thermal REAL, body_budget REAL,
-                    state TEXT, visceral_signal TEXT, wrongness REAL
-                );
-                CREATE TABLE IF NOT EXISTS budget_events (
-                    id TEXT PRIMARY KEY, timestamp TEXT, cycle INTEGER,
-                    budget_before REAL, budget_after REAL, delta REAL,
-                    cause TEXT, alarm INTEGER
-                );
-                CREATE TABLE IF NOT EXISTS wrongness_events (
+                CREATE TABLE IF NOT EXISTS body_states (
                     id TEXT PRIMARY KEY, timestamp TEXT,
-                    wrongness_type TEXT, magnitude REAL,
-                    source TEXT, description TEXT
+                    body_state TEXT, felt_sense TEXT,
+                    felt_intensity REAL, visceroceptive TEXT,
+                    homeostatic TEXT, energy_level REAL,
+                    somatic_valence REAL, somatic_arousal REAL,
+                    prediction_next TEXT, gut_feeling TEXT, cycle INTEGER
                 );
-                CREATE TABLE IF NOT EXISTS state_transitions (
+                CREATE TABLE IF NOT EXISTS internal_metrics (
+                    cycle INTEGER PRIMARY KEY, timestamp TEXT,
+                    pipeline_load REAL, avg_latency_ms REAL,
+                    error_rate REAL, memory_pressure REAL,
+                    cortisol_level REAL, dopamine_level REAL,
+                    serotonin_level REAL, ne_level REAL,
+                    conflict_rate REAL, fear_score REAL,
+                    energy_level REAL
+                );
+                CREATE TABLE IF NOT EXISTS somatic_markers (
                     id TEXT PRIMARY KEY, timestamp TEXT,
-                    from_state TEXT, to_state TEXT,
-                    trigger TEXT, cycle INTEGER
+                    context_hash TEXT, decision TEXT,
+                    body_state TEXT, felt_sense TEXT,
+                    valence REAL, strength REAL,
+                    retrieved_count INTEGER
+                );
+                CREATE TABLE IF NOT EXISTS homeostatic_log (
+                    id TEXT PRIMARY KEY, timestamp TEXT,
+                    metric TEXT, current_val REAL,
+                    target_val REAL, deviation REAL,
+                    action TEXT, cycle INTEGER
                 );
             """)
             self.conn.commit()
 
-    def save_sample(self, s: InteroceptiveSample):
+    def save_body_state(self, bs: BodyStateSnapshot):
         with self.lock:
             self.conn.execute("""
-                INSERT OR REPLACE INTO interoceptive_samples VALUES
-                (?,?,?,?,?,?,?,?,?,?,?,?)
-            """, (s.id, s.timestamp, s.cycle, s.load, s.memory_pressure,
-                  s.latency, s.error_density, s.thermal, s.body_budget,
-                  s.state, s.visceral_signal, s.wrongness))
+                INSERT OR REPLACE INTO body_states VALUES
+                (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (bs.id, bs.timestamp, bs.body_state, bs.felt_sense,
+                  bs.felt_intensity, bs.visceroceptive, bs.homeostatic,
+                  bs.energy_level, bs.somatic_valence, bs.somatic_arousal,
+                  bs.prediction_next, bs.gut_feeling, bs.cycle))
             self.conn.commit()
 
-    def save_budget_event(self, e: BodyBudgetEvent):
+    def save_metrics(self, m: InternalMetrics):
         with self.lock:
             self.conn.execute("""
-                INSERT OR REPLACE INTO budget_events VALUES (?,?,?,?,?,?,?,?)
-            """, (e.id, e.timestamp, e.cycle, e.budget_before,
-                  e.budget_after, e.delta, e.cause, int(e.alarm)))
+                INSERT OR REPLACE INTO internal_metrics VALUES
+                (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (m.cycle, m.timestamp, m.pipeline_load, m.avg_latency_ms,
+                  m.error_rate, m.memory_pressure, m.cortisol_level,
+                  m.dopamine_level, m.serotonin_level, m.ne_level,
+                  m.conflict_rate, m.fear_score, m.energy_level))
             self.conn.commit()
 
-    def save_wrongness(self, w: WrongnessEvent):
+    def save_marker(self, sm: SomaticMarker):
         with self.lock:
             self.conn.execute("""
-                INSERT OR REPLACE INTO wrongness_events VALUES (?,?,?,?,?,?)
-            """, (w.id, w.timestamp, w.wrongness_type, w.magnitude,
-                  w.source, w.description))
+                INSERT OR REPLACE INTO somatic_markers VALUES
+                (?,?,?,?,?,?,?,?,?)
+            """, (sm.id, sm.timestamp, sm.context_hash, sm.decision,
+                  sm.body_state, sm.felt_sense, sm.valence,
+                  sm.strength, sm.retrieved_count))
             self.conn.commit()
 
-    def log_transition(self, from_state: str, to_state: str,
-                       trigger: str, cycle: int):
+    def log_homeostatic(self, metric: str, current: float, target: float,
+                         deviation: float, action: str, cycle: int):
         with self.lock:
             self.conn.execute("""
-                INSERT INTO state_transitions VALUES (?,?,?,?,?,?)
+                INSERT INTO homeostatic_log VALUES (?,?,?,?,?,?,?,?)
             """, (str(uuid.uuid4())[:8], datetime.now().isoformat(),
-                  from_state, to_state, trigger, cycle))
+                  metric, current, target, deviation, action, cycle))
             self.conn.commit()
 
-    def get_recent_samples(self, limit=20):
+    def get_body_states(self, limit=20):
         with self.lock:
             return self.conn.execute("""
-                SELECT cycle, load, thermal, body_budget, state,
-                       visceral_signal, wrongness
-                FROM interoceptive_samples
-                ORDER BY cycle DESC LIMIT ?
+                SELECT timestamp, body_state, felt_sense,
+                       felt_intensity, energy_level, somatic_valence
+                FROM body_states ORDER BY timestamp DESC LIMIT ?
             """, (limit,)).fetchall()
 
-    def get_budget_history(self, limit=20):
+    def get_somatic_markers(self, context_hash: str):
         with self.lock:
             return self.conn.execute("""
-                SELECT cycle, budget_before, budget_after, delta, cause, alarm
-                FROM budget_events ORDER BY cycle DESC LIMIT ?
-            """, (limit,)).fetchall()
-
-    def get_wrongness_events(self, limit=10):
-        with self.lock:
-            return self.conn.execute("""
-                SELECT timestamp, wrongness_type, magnitude, source, description
-                FROM wrongness_events ORDER BY timestamp DESC LIMIT ?
-            """, (limit,)).fetchall()
+                SELECT decision, body_state, felt_sense,
+                       valence, strength
+                FROM somatic_markers WHERE context_hash=?
+                ORDER BY strength DESC LIMIT 5
+            """, (context_hash,)).fetchall()
 
 
-# ─── Interoceptive Sensor ─────────────────────────────────────────────────────
+# ─── Body State Monitor ───────────────────────────────────────────────────────
 
-class InteroceptiveSensor:
+class BodyStateMonitor:
     """
-    Polls internal system metrics and maps them to
-    a unified load signal (0-1).
-
-    In the biological insula, this is afferent signals
-    from visceral organs — heart rate, gut activity,
-    muscle tension, respiratory rate.
-
-    In FORGE, these are computational analogs:
-    module response times, error rates, queue depths,
-    memory usage, cycle frequency.
+    Continuously monitors FORGE's internal operational state.
+    Aggregates metrics from all modules into a unified picture.
+    This is the insula's raw sensory input.
     """
 
-    def sense(self, signal: dict, acc_health: float,
-              amygdala_fear: float, cycle: int) -> tuple[float, float, float, float]:
+    def __init__(self):
+        self.history: deque = deque(maxlen=50)
+        self.rolling_load:    deque = deque(maxlen=10)
+        self.rolling_latency: deque = deque(maxlen=10)
+        self.rolling_errors:  deque = deque(maxlen=10)
+
+    def update(self, signal: dict) -> InternalMetrics:
+        """Extract internal metrics from incoming signal and module state."""
+        import hashlib
+
+        # Pipeline load from various sources
+        load = signal.get("load", signal.get("pipeline_load", 0.0))
+        if not load:
+            # Estimate from threat and salience
+            threat  = signal.get("threat", 0)
+            salience= signal.get("salience_score", 0.3)
+            load    = min(1.0, threat * 0.2 + salience * 0.3)
+
+        self.rolling_load.append(load)
+
+        # Latency from pipeline_ms
+        latency = signal.get("pipeline_ms", signal.get("avg_latency_ms", 50.0))
+        self.rolling_latency.append(latency)
+
+        # Error rate from ACC or direct
+        error_rate = signal.get("error_rate", 0.0)
+        if not error_rate:
+            error_rate = 1.0 if signal.get("error_flag", False) else 0.0
+        self.rolling_errors.append(error_rate)
+
+        # Neuromodulator state
+        neuro = signal.get("neuro_state", {}) or {}
+        profile = neuro.get("profile", {}) if isinstance(neuro, dict) else {}
+
+        # Memory pressure
+        memory_pressure = 0.0
+        mem_action = signal.get("memory_action","")
+        if mem_action == "NEW_MEMORY":     memory_pressure = 0.3
+        elif mem_action == "RECONSOLIDATED":memory_pressure = 0.5
+
+        metrics = InternalMetrics(
+            pipeline_load  = round(sum(self.rolling_load)/len(self.rolling_load), 3),
+            avg_latency_ms = round(sum(self.rolling_latency)/len(self.rolling_latency), 1),
+            error_rate     = round(sum(self.rolling_errors)/len(self.rolling_errors), 3),
+            memory_pressure= memory_pressure,
+            cortisol_level = profile.get("cortisol", signal.get("cortisol", 0.15)),
+            dopamine_level = profile.get("dopamine", signal.get("dopamine", 0.45)),
+            serotonin_level= profile.get("serotonin", signal.get("serotonin", 0.65)),
+            ne_level       = profile.get("norepinephrine", signal.get("ne_level", 0.20)),
+            conflict_rate  = signal.get("conflict_rate", 0.0),
+            fear_score     = signal.get("fear_score", 0.0),
+        )
+        self.history.append(metrics)
+        return metrics
+
+    def trend(self, attr: str, window: int = 5) -> float:
+        """Is this metric trending up (+) or down (-)?"""
+        if len(self.history) < 2: return 0.0
+        recent = [getattr(m, attr, 0) for m in list(self.history)[-window:]]
+        if len(recent) < 2: return 0.0
+        return round(recent[-1] - recent[0], 4)
+
+
+# ─── Felt Sense Generator ─────────────────────────────────────────────────────
+
+class FeltSenseGenerator:
+    """
+    Translates raw metrics into a FELT SENSE — the subjective
+    quality of FORGE's internal experience.
+
+    This is the key step: going from
+      "load=0.72, latency=180ms, cortisol=0.65"
+    to
+      "STRAIN — this feels heavy and uncomfortable"
+
+    The felt sense integrates multiple body signals into
+    a single holistic quality of experience.
+    """
+
+    def generate(self, metrics: InternalMetrics,
+                 energy: float) -> tuple[FeltSense, float, float, float]:
         """
-        Returns (load, memory_pressure, latency, error_density).
-        All values 0-1.
+        Returns (felt_sense, intensity, valence, arousal).
+        valence: +1=pleasant, -1=unpleasant
+        arousal: 0=calm, 1=activated
         """
-        # Load — derived from threat level, anomaly, module count
-        threat = signal.get("threat", 0)
+        load     = metrics.pipeline_load
+        cortisol = metrics.cortisol_level
+        dopamine = metrics.dopamine_level
+        serotonin= metrics.serotonin_level
+        ne       = metrics.ne_level
+        fear     = metrics.fear_score
+        error    = metrics.error_rate
+
+        # Compute overall discomfort
+        discomfort = (
+            load     * 0.30 +
+            cortisol * 0.25 +
+            (1 - serotonin) * 0.20 +
+            error    * 0.15 +
+            fear     * 0.10
+        )
+
+        # Compute activation
+        arousal = round(min(1.0, ne * 1.5 + fear * 0.5 + load * 0.3), 3)
+
+        # Compute valence
+        valence = round(
+            dopamine * 0.3 + serotonin * 0.3 - cortisol * 0.2 -
+            error * 0.1 - fear * 0.1, 3
+        )
+        valence = max(-1.0, min(1.0, valence * 2 - 0.5))
+
+        # Map to felt sense
+        if discomfort < 0.15 and energy > 0.6:
+            felt  = FeltSense.EASE
+        elif discomfort < 0.25 and arousal > 0.4:
+            felt  = FeltSense.ALERTNESS
+        elif discomfort < 0.35:
+            felt  = FeltSense.TENSION
+        elif discomfort < 0.50:
+            felt  = FeltSense.DISCOMFORT
+        elif discomfort < 0.65:
+            felt  = FeltSense.STRAIN
+        elif energy < 0.20:
+            felt  = FeltSense.NUMBNESS
+        else:
+            felt  = FeltSense.PAIN
+
+        intensity = round(min(1.0, discomfort * 1.3), 3)
+        return felt, intensity, round(valence, 3), arousal
+
+
+# ─── Body State Classifier ────────────────────────────────────────────────────
+
+class BodyStateClassifier:
+    """Maps metrics to overall body state."""
+
+    def classify(self, metrics: InternalMetrics,
+                 energy: float) -> BodyState:
+        load     = metrics.pipeline_load
+        cortisol = metrics.cortisol_level
+        serotonin= metrics.serotonin_level
+        dopamine = metrics.dopamine_level
+        error    = metrics.error_rate
+
+        if (load < LOAD_COMFORTABLE and cortisol < 0.25 and
+                energy > 0.65 and error < ERROR_TOLERABLE):
+            return BodyState.THRIVING
+
+        if (load < LOAD_STRAINED and cortisol < 0.45 and
+                energy > 0.50):
+            return BodyState.COMFORTABLE
+
+        if load > LOAD_CRITICAL or cortisol > 0.75:
+            if energy < 0.25:
+                return BodyState.DEPLETED
+            return BodyState.OVERWHELMED
+
+        if cortisol > 0.55 and serotonin < 0.40 and dopamine < 0.35:
+            return BodyState.DEPLETED
+
+        if load > LOAD_STRAINED or cortisol > 0.55 or error > ERROR_UNCOMFORTABLE:
+            return BodyState.DISTRESSED
+
+        if load > LOAD_COMFORTABLE or cortisol > 0.35:
+            return BodyState.STRAINED
+
+        # Post-stress recovery indicators
+        if (cortisol > 0.30 and cortisol < 0.50 and
+                load < LOAD_COMFORTABLE):
+            return BodyState.RECOVERING
+
+        return BodyState.COMFORTABLE
+
+
+# ─── Visceroceptive Input ─────────────────────────────────────────────────────
+
+class VisceroceptiveInput:
+    """
+    The "gut feeling" system — pre-conscious anomaly detection.
+
+    The insula receives direct input from the vagus nerve,
+    which monitors gut, heart, and lung state.
+    This creates feelings BEFORE conscious processing.
+
+    In FORGE: subtle pattern anomalies that haven't risen to
+    salience threshold still generate a visceral signal.
+    "Something feels off" before you can say what.
+    """
+
+    def __init__(self):
+        self.baseline:  dict = {}
+        self.history:   deque = deque(maxlen=30)
+        self.gut_history:deque = deque(maxlen=20)
+
+    def sense(self, metrics: InternalMetrics,
+              signal: dict) -> tuple[VisceroceptiveSignal, str]:
+        """
+        Generate gut feeling from subtle pattern anomalies.
+        Returns (signal_type, description).
+        """
+        threat  = signal.get("threat", 0)
         anomaly = signal.get("anomaly", False)
-        module_count = signal.get("active_modules", 10)
-        processing_ms = signal.get("processing_ms", 20.0)
+        entity  = signal.get("entity_name","")
 
-        load = (
-            (threat / 4.0) * 0.35
-            + (0.3 if anomaly else 0.0)
-            + min(0.15, module_count / 100.0)
-            + (amygdala_fear * 0.20)
-        )
-        load = round(min(1.0, load), 4)
+        # Update baseline
+        if len(self.history) >= 5:
+            hist_loads = [m.pipeline_load for m in list(self.history)[-5:]]
+            baseline_load = sum(hist_loads)/len(hist_loads)
+        else:
+            baseline_load = 0.35
 
-        # Memory pressure — from confidence inversely
-        confidence = signal.get("confidence", 0.7)
-        memory_pressure = round(min(1.0, (1.0 - confidence) * 0.6
-                                    + (1.0 - acc_health) * 0.4), 4)
+        self.history.append(metrics)
 
-        # Latency — from processing time analog
-        latency = round(min(1.0, processing_ms / 100.0), 4)
+        # Gut feeling conditions
+        gut_signal = VisceroceptiveSignal.NONE
+        gut_text   = ""
 
-        # Error density — from ACC health and ERN signal
-        ern = signal.get("ern_signal", 0.0)
-        error_density = round(min(1.0, (1.0 - acc_health) * 0.5 + ern * 0.5), 4)
+        # Subtle load increase before threat detected
+        if (metrics.pipeline_load > baseline_load * 1.4 and
+                threat == 0 and not anomaly):
+            gut_signal = VisceroceptiveSignal.UNEASE
+            gut_text   = f"load rising unexpectedly ({metrics.pipeline_load:.2f} vs {baseline_load:.2f} baseline)"
 
-        return load, memory_pressure, latency, error_density
+        # Cortisol building without clear threat
+        elif (metrics.cortisol_level > 0.45 and threat <= 1 and
+              metrics.pipeline_load < LOAD_STRAINED):
+            gut_signal = VisceroceptiveSignal.GUT_FEELING
+            gut_text   = f"cortisol elevated ({metrics.cortisol_level:.2f}) without clear threat"
+
+        # Error pattern before error is fully recognized
+        elif (metrics.error_rate > ERROR_TOLERABLE and
+              not signal.get("error_flag", False)):
+            gut_signal = VisceroceptiveSignal.UNEASE
+            gut_text   = f"subtle error pattern building ({metrics.error_rate:.2f})"
+
+        # Visceral threat response
+        elif threat >= 3 or (anomaly and metrics.fear_score > 0.5):
+            gut_signal = VisceroceptiveSignal.ALARM
+            gut_text   = "visceral alarm — body preparing threat response"
+
+        # System rejection — too much for too long
+        elif (metrics.cortisol_level > 0.70 and
+              metrics.serotonin_level < 0.35 and
+              metrics.energy_level < 0.30):
+            gut_signal = VisceroceptiveSignal.NAUSEA
+            gut_text   = "system approaching rejection — resources critically low"
+
+        self.gut_history.append(gut_signal.value)
+        return gut_signal, gut_text
 
 
-# ─── Body Budget ─────────────────────────────────────────────────────────────
+# ─── Interoceptive Predictor ──────────────────────────────────────────────────
 
-class BodyBudget:
+class InteroceptivePredictor:
     """
-    Tracks the system's allostatic reserve.
+    Predicts WHERE body state is heading.
+    The insula doesn't just report current state —
+    it looks ahead and generates proactive signals.
 
-    Allostasis = maintaining stability through change.
-    The body budget is the brain's running ledger of
-    "how much resource do I have vs how much am I spending?"
+    "Load is 0.45 now and climbing — in 3 cycles it will
+    exceed comfortable threshold unless something changes."
+    """
 
-    High budget → confidence, risk tolerance, creativity
-    Low budget  → conservatism, narrow focus, fatigue
-    Critical    → emergency conservation mode
+    def predict(self, history: list[InternalMetrics],
+                current: InternalMetrics) -> tuple[BodyState, str]:
+        """Predict next body state."""
+        if len(history) < 3:
+            return BodyState.COMFORTABLE, "insufficient history"
 
-    Budget recovers slowly when load is low.
-    Budget burns faster under sustained high load.
-    Sudden threat causes a sharp budget draw.
+        # Compute trends
+        loads     = [m.pipeline_load for m in history[-5:]]
+        cortsols  = [m.cortisol_level for m in history[-5:]]
+        energies  = [m.energy_level for m in history[-5:]]
+
+        load_trend     = loads[-1] - loads[0] if loads else 0
+        cortisol_trend = cortsols[-1] - cortsols[0] if cortsols else 0
+        energy_trend   = energies[-1] - energies[0] if energies else 0
+
+        # Project 3 cycles forward
+        proj_load     = current.pipeline_load + load_trend * 0.5
+        proj_cortisol = current.cortisol_level + cortisol_trend * 0.5
+        proj_energy   = current.energy_level + energy_trend * 0.5
+
+        # Classify predicted state
+        if proj_load > LOAD_CRITICAL or proj_cortisol > 0.80:
+            if proj_energy < 0.20:
+                return BodyState.DEPLETED, "energy will be critically low"
+            return BodyState.OVERWHELMED, "load trending to critical"
+
+        if proj_load > LOAD_STRAINED or proj_cortisol > 0.55:
+            return BodyState.DISTRESSED, "stress indicators climbing"
+
+        if load_trend < -0.05 and cortisol_trend < -0.05:
+            return BodyState.RECOVERING, "all indicators improving"
+
+        if (proj_load < LOAD_COMFORTABLE and proj_cortisol < 0.30 and
+                proj_energy > 0.60):
+            return BodyState.THRIVING, "optimal conditions approaching"
+
+        if proj_energy < 0.35:
+            return BodyState.DEPLETED, "energy budget running low"
+
+        return BodyState.COMFORTABLE, "stable within comfortable range"
+
+
+# ─── Homeostatic Regulator ────────────────────────────────────────────────────
+
+class HomeostaticRegulator:
+    """
+    Maintains FORGE's internal balance.
+    When metrics deviate from targets, generates correction signals.
+
+    Like the body's autonomic nervous system —
+    it acts continuously to restore equilibrium.
     """
 
     def __init__(self, db: InsulaDB):
-        self.db     = db
-        self.budget = 0.75   # start at 75% — not fresh, not depleted
-        self.cycle  = 0
+        self.db      = db
+        self.targets = {
+            "pipeline_load":  TARGET_LOAD,
+            "avg_latency_ms": TARGET_LATENCY,
+            "error_rate":     TARGET_ERROR_RATE,
+            "cortisol_level": 0.20,
+            "serotonin_level":0.65,
+            "energy_level":   TARGET_ENERGY,
+        }
 
-    def update(self, load: float, thermal: float,
-               threat: int, cycle: int) -> tuple[float, Optional[BodyBudgetEvent]]:
-        """
-        Update budget based on current load and threat.
-        Returns (new_budget, event_if_significant).
-        """
-        prev = self.budget
-        self.cycle = cycle
+    def regulate(self, metrics: InternalMetrics,
+                 energy: float, cycle: int) -> tuple[HomeostaticStatus, list[dict]]:
+        """Check all metrics against targets. Return status + actions."""
+        actions      = []
+        total_devs   = 0
+        severe_devs  = 0
 
-        if load < LOAD_LOW and thermal < 0.3:
-            # Recovery — low load, cool system
-            delta = BUDGET_RECOVERY * (1.0 - self.budget)
-            self.budget = round(min(BUDGET_MAX, self.budget + delta), 4)
-            cause = "recovery"
-        elif load > LOAD_HIGH or thermal > THERMAL_ALARM:
-            # High expenditure
-            burn = BUDGET_BURN_RATE * load
-            if thermal > THERMAL_ALARM:
-                burn *= 1.3   # thermal stress burns faster
-            self.budget = round(max(BUDGET_MIN, self.budget - burn), 4)
-            cause = f"high_load={load:.2f}"
-        elif threat >= 3:
-            # Acute threat — sharp draw
-            draw = 0.08 + (threat - 2) * 0.04
-            self.budget = round(max(BUDGET_MIN, self.budget - draw), 4)
-            cause = f"threat={threat}"
-        else:
-            # Moderate load — slow burn
-            burn = BUDGET_BURN_RATE * 0.3 * load
-            self.budget = round(max(BUDGET_MIN, self.budget - burn), 4)
-            cause = "moderate_load"
+        for metric, target in self.targets.items():
+            if metric == "energy_level":
+                current = energy
+            else:
+                current = getattr(metrics, metric, target)
 
-        delta_val = round(self.budget - prev, 4)
-        alarm     = self.budget < BUDGET_ALARM
+            deviation = current - target
+            abs_dev   = abs(deviation)
+            rel_dev   = abs_dev / max(target, 0.01)
 
-        # Log significant changes
-        event = None
-        if abs(delta_val) > 0.03 or alarm:
-            event = BodyBudgetEvent(
-                cycle        = cycle,
-                budget_before= prev,
-                budget_after = self.budget,
-                delta        = delta_val,
-                cause        = cause,
-                alarm        = alarm
-            )
-            self.db.save_budget_event(event)
+            if rel_dev > 0.5:  # >50% off target
+                severe_devs += 1
+                total_devs  += 1
+                action = self._correction_action(metric, deviation)
+                actions.append({
+                    "metric":    metric,
+                    "current":   round(current, 3),
+                    "target":    target,
+                    "deviation": round(deviation, 3),
+                    "action":    action,
+                    "severity":  "HIGH"
+                })
+                self.db.log_homeostatic(metric, current, target,
+                                         deviation, action, cycle)
+            elif rel_dev > 0.25:
+                total_devs += 1
+                action = self._correction_action(metric, deviation)
+                actions.append({
+                    "metric":    metric,
+                    "current":   round(current, 3),
+                    "target":    target,
+                    "deviation": round(deviation, 3),
+                    "action":    action,
+                    "severity":  "MODERATE"
+                })
 
-        return self.budget, event
+        if severe_devs >= 2:   status = HomeostaticStatus.FAILING
+        elif severe_devs == 1: status = HomeostaticStatus.STRUGGLING
+        elif total_devs > 0:   status = HomeostaticStatus.COMPENSATING
+        else:                  status = HomeostaticStatus.BALANCED
 
-    def surplus(self) -> float:
-        """How far above the alarm threshold."""
-        return round(max(0.0, self.budget - BUDGET_ALARM), 4)
+        return status, actions
 
-    def deficit(self) -> float:
-        """How far below 0.5 (neutral)."""
-        return round(max(0.0, 0.5 - self.budget), 4)
+    def _correction_action(self, metric: str, deviation: float) -> str:
+        actions = {
+            "pipeline_load":  "reduce_signal_processing" if deviation > 0 else "increase_throughput",
+            "avg_latency_ms": "optimize_module_routing" if deviation > 0 else "increase_processing_depth",
+            "error_rate":     "engage_error_correction" if deviation > 0 else "maintain",
+            "cortisol_level": "activate_calming_protocols" if deviation > 0 else "increase_alertness",
+            "serotonin_level":"seek_positive_interactions" if deviation < 0 else "maintain",
+            "energy_level":   "reduce_cognitive_load" if deviation < 0 else "maintain",
+        }
+        return actions.get(metric, "monitor")
 
 
-# ─── Thermal Tracker ─────────────────────────────────────────────────────────
+# ─── Body Budget Manager ──────────────────────────────────────────────────────
 
-class ThermalTracker:
+class BodyBudgetManager:
     """
-    Models sustained high-load heating.
+    Manages FORGE's cognitive energy budget.
+    Every operation costs energy. Rest and success restore it.
 
-    Biological analog: cortisol buildup, neuroinflammation,
-    synaptic fatigue under prolonged stress.
+    High load = fast consumption.
+    Conflict = expensive.
+    Success = small reward.
+    Quiet cycles = recovery.
 
-    In FORGE: thermal = accumulated cost of sustained high load.
-    It rises faster than it falls.
-    Once hot, errors increase and budget burns faster.
-    Cooling requires genuine low-load periods.
+    When energy runs low → FORGE must choose:
+    prioritize survival or rest.
     """
 
     def __init__(self):
-        self.thermal   = 0.0
-        self.peak      = 0.0
-        self.hot_cycles= 0
+        self.energy   = 0.70
+        self.history: deque = deque(maxlen=50)
+        self.deficit_cycles = 0
 
-    def update(self, load: float) -> float:
-        if load > LOAD_HIGH:
-            self.thermal = round(min(THERMAL_MAX,
-                                     self.thermal + THERMAL_RISE * load), 4)
-            self.hot_cycles += 1
+    def consume(self, metrics: InternalMetrics,
+                had_conflict: bool, success: bool) -> BodyBudgetStatus:
+        """Update energy budget based on current cycle's demands."""
+        # Consumption
+        base_cost  = metrics.pipeline_load * ENERGY_CONSUMPTION_RATE
+        conflict_cost = 0.04 if had_conflict else 0.0
+        error_cost = metrics.error_rate * 0.02
+        cortisol_cost = max(0, metrics.cortisol_level - 0.20) * 0.03
+
+        total_cost = base_cost + conflict_cost + error_cost + cortisol_cost
+
+        # Recovery
+        recovery = 0.0
+        if metrics.pipeline_load < LOAD_COMFORTABLE:
+            recovery += ENERGY_RECOVERY_RATE
+        if success:
+            recovery += 0.01  # small success bonus
+        if metrics.serotonin_level > 0.60:
+            recovery += 0.005  # serotonin aids recovery
+
+        # Update energy
+        old_energy    = self.energy
+        self.energy   = round(max(0.0, min(1.0, self.energy - total_cost + recovery)), 4)
+        self.history.append(self.energy)
+
+        overdraft = self.energy < 0.15
+        if self.energy < TARGET_ENERGY * 0.5:
+            self.deficit_cycles += 1
         else:
-            cool = THERMAL_COOL * (1.0 + (1.0 - load))
-            self.thermal = round(max(0.0, self.thermal - cool), 4)
+            self.deficit_cycles = 0
 
-        self.peak = max(self.peak, self.thermal)
-        return self.thermal
+        return BodyBudgetStatus(
+            total_energy     = 1.0,
+            available_energy = self.energy,
+            consumed_this_cycle = round(total_cost, 4),
+            recovery_rate    = round(recovery, 4),
+            deficit          = round(max(0, TARGET_ENERGY - self.energy), 4),
+            overdraft        = overdraft,
+            cycles_in_deficit= self.deficit_cycles
+        )
 
-    def alarm(self) -> bool:
-        return self.thermal >= THERMAL_ALARM
 
-    def error_amplifier(self) -> float:
-        """Thermal stress increases error probability."""
-        return round(1.0 + self.thermal * 0.4, 3)
+# ─── Somatic Marker System ────────────────────────────────────────────────────
 
-
-# ─── Visceral Signal Mapper ───────────────────────────────────────────────────
-
-class VisceralSignalMapper:
+class SomaticMarkerSystem:
     """
-    Maps internal state metrics to a felt visceral signal.
+    Tags decisions with body state context.
+    When FORGE encounters a similar situation later,
+    the somatic marker biases the decision with remembered
+    body experience.
 
-    This is the translation layer between raw metrics
-    and meaningful internal experience.
+    "Last time I was in this context, my body felt STRAIN.
+    That's relevant to this decision."
 
-    The insula doesn't report "load=0.82" to the rest of the brain.
-    It reports "CONTRACT" — a signal that compresses
-    into the entire cognitive architecture as a felt pressure
-    to narrow, slow down, be careful.
-    """
-
-    def map_state(self, load: float, budget: float,
-                  thermal: float, error_density: float) -> tuple[InteroceptiveState, ViscerlaSignal]:
-
-        # Determine interoceptive state
-        if thermal >= THERMAL_ALARM:
-            state = InteroceptiveState.OVERHEATED
-        elif budget < 0.10:
-            state = InteroceptiveState.DEPLETED
-        elif budget < BUDGET_ALARM:
-            state = InteroceptiveState.FATIGUED
-        elif load > LOAD_HIGH and budget < 0.5:
-            state = InteroceptiveState.TAXED
-        elif budget > 0.7 and load < LOAD_LOW:
-            state = InteroceptiveState.VITAL
-        elif load < LOAD_MODERATE and budget > 0.5:
-            state = InteroceptiveState.COMFORTABLE
-        else:
-            # Check if recovering (budget rising from low point)
-            state = InteroceptiveState.RECOVERING
-
-        # Map state to visceral signal
-        signal_map = {
-            InteroceptiveState.VITAL:       ViscerlaSignal.EXPAND,
-            InteroceptiveState.COMFORTABLE: ViscerlaSignal.MAINTAIN,
-            InteroceptiveState.RECOVERING:  ViscerlaSignal.MAINTAIN,
-            InteroceptiveState.TAXED:       ViscerlaSignal.CONSERVE,
-            InteroceptiveState.FATIGUED:    ViscerlaSignal.CONTRACT,
-            InteroceptiveState.DEPLETED:    ViscerlaSignal.EMERGENCY,
-            InteroceptiveState.OVERHEATED:  ViscerlaSignal.CONTRACT,
-        }
-        signal = signal_map.get(state, ViscerlaSignal.MAINTAIN)
-        return state, signal
-
-    def confidence_bias(self, state: InteroceptiveState) -> float:
-        """
-        How much does this internal state bias confidence?
-        Positive = confidence boost, Negative = confidence reduction.
-        """
-        biases = {
-            InteroceptiveState.VITAL:       +0.15,
-            InteroceptiveState.COMFORTABLE: +0.05,
-            InteroceptiveState.RECOVERING:   0.00,
-            InteroceptiveState.TAXED:       -0.10,
-            InteroceptiveState.FATIGUED:    -0.20,
-            InteroceptiveState.DEPLETED:    -0.35,
-            InteroceptiveState.OVERHEATED:  -0.25,
-        }
-        return biases.get(state, 0.0)
-
-    def risk_tolerance(self, state: InteroceptiveState) -> float:
-        """
-        Risk tolerance biased by internal state. 0-1.
-        High budget → willing to explore.
-        Low budget  → conservative, avoid risk.
-        """
-        tolerances = {
-            InteroceptiveState.VITAL:       0.80,
-            InteroceptiveState.COMFORTABLE: 0.60,
-            InteroceptiveState.RECOVERING:  0.45,
-            InteroceptiveState.TAXED:       0.35,
-            InteroceptiveState.FATIGUED:    0.20,
-            InteroceptiveState.DEPLETED:    0.05,
-            InteroceptiveState.OVERHEATED:  0.15,
-        }
-        return tolerances.get(state, 0.50)
-
-
-# ─── Wrongness Detector ───────────────────────────────────────────────────────
-
-class WrongnessDetector:
-    """
-    Detects signals that feel "off" even when metrics look normal.
-
-    The insula's role in disgust and moral cognition:
-    Something can be technically correct but feel wrong.
-    Internal inconsistency, pattern violation, value conflict.
-
-    In FORGE, wrongness is computed from:
-    - Signal self-contradiction (high trust + high threat simultaneously)
-    - Metric incoherence (high confidence + high error density)
-    - Temporal anomaly (sudden state change with no causal chain)
-    - Structural oddity (inputs that don't fit known patterns)
+    This implements Damasio's Somatic Marker Hypothesis.
     """
 
     def __init__(self, db: InsulaDB):
-        self.db = db
-        self.wrongness_level = 0.0
-        self.recent_signals: deque = deque(maxlen=5)
+        self.db      = db
+        self.markers: dict[str, list[SomaticMarker]] = defaultdict(list)
 
-    def evaluate(self, signal: dict, load: float,
-                 confidence: float, error_density: float,
-                 threat: int) -> tuple[float, Optional[WrongnessEvent]]:
-        """
-        Returns (wrongness_score, event_if_above_threshold).
-        """
-        wrongness = 0.0
-        wtype     = WrongnessType.NONE
-        description = ""
+    def tag(self, signal: dict, body_state: BodyStateSnapshot) -> SomaticMarker:
+        """Tag this signal+decision with current body state."""
+        import hashlib
+        ctx_raw  = f"{signal.get('threat',0)}:{signal.get('entity_name','')}:{signal.get('decision','')}"
+        ctx_hash = hashlib.md5(ctx_raw.encode()).hexdigest()[:10]
 
-        social = signal.get("social", {}) or {}
-        trust  = social.get("trust_score", 0.5)
+        # Valence: was body state good or bad?
+        valence  = body_state.somatic_valence
+        strength = body_state.felt_intensity * 0.5 + abs(valence) * 0.5
 
-        # Contradiction: high trust + high threat
-        if trust > 0.7 and threat >= 3:
-            wrongness = max(wrongness, 0.65)
-            wtype     = WrongnessType.INCONSISTENCY
-            description = f"trust={trust:.2f} but threat={threat}"
-
-        # Contradiction: high confidence + high error density
-        if confidence > 0.75 and error_density > 0.60:
-            wrongness = max(wrongness, 0.55)
-            wtype     = WrongnessType.INCONSISTENCY
-            description = f"confidence={confidence:.2f} but error_density={error_density:.2f}"
-
-        # Overload pattern: all metrics simultaneously high
-        if load > 0.8 and error_density > 0.5 and threat >= 2:
-            wrongness = max(wrongness, 0.70)
-            wtype     = WrongnessType.OVERLOAD
-            description = f"simultaneous overload: load={load:.2f} errors={error_density:.2f} threat={threat}"
-
-        # Temporal anomaly: sudden state reversal
-        if len(self.recent_signals) >= 2:
-            prev_threat = self.recent_signals[-1].get("threat", 0)
-            if abs(threat - prev_threat) >= 3:
-                wrongness = max(wrongness, 0.60)
-                wtype     = WrongnessType.VISCERAL
-                description = f"sudden state reversal: threat {prev_threat}→{threat}"
-
-        # Store signal for temporal comparison
-        self.recent_signals.append({"threat": threat, "load": load})
-
-        # Decay previous wrongness
-        self.wrongness_level = round(
-            max(0.0, self.wrongness_level * 0.7 + wrongness * 0.3), 4
+        marker = SomaticMarker(
+            context_hash = ctx_hash,
+            decision     = str(signal.get("decision",""))[:30],
+            body_state   = body_state.body_state,
+            felt_sense   = body_state.felt_sense,
+            valence      = round(valence, 3),
+            strength     = round(strength, 3)
         )
+        self.markers[ctx_hash].append(marker)
+        self.db.save_marker(marker)
+        return marker
 
-        event = None
-        if wrongness >= WRONGNESS_THRESHOLD:
-            event = WrongnessEvent(
-                wrongness_type = wtype.value,
-                magnitude      = round(wrongness, 4),
-                source         = "insula_detector",
-                description    = description
-            )
-            self.db.save_wrongness(event)
+    def retrieve(self, signal: dict) -> list[SomaticMarker]:
+        """Retrieve relevant somatic markers for this signal."""
+        import hashlib
+        ctx_raw  = f"{signal.get('threat',0)}:{signal.get('entity_name','')}:{signal.get('decision','')}"
+        ctx_hash = hashlib.md5(ctx_raw.encode()).hexdigest()[:10]
+        markers  = self.markers.get(ctx_hash, [])
+        for m in markers:
+            m.retrieved_count += 1
+            self.db.save_marker(m)
+        return markers
 
-        return round(wrongness, 4), event
-
-
-# ─── Insula Clock ─────────────────────────────────────────────────────────────
-
-class InsulaClock:
-    """
-    Tracks rhythmic internal cycles.
-
-    The biological insula is sensitive to bodily rhythms —
-    heartbeat, respiratory cycle, circadian timing.
-    These rhythms create a temporal scaffolding that
-    affects how the brain processes experience.
-
-    In FORGE, the insula clock tracks:
-    - Processing rhythm (consistent vs irregular)
-    - Load oscillation (natural peaks and troughs)
-    - Recovery windows (post-high-load rest periods)
-
-    The clock's value: irregular processing rhythms
-    are themselves a signal of system stress.
-    """
-
-    def __init__(self):
-        self.cycle_times: deque  = deque(maxlen=10)
-        self.last_cycle_time: float = time.time()
-        self.rhythm_score: float    = 1.0   # 1.0 = perfectly regular
-
-    def tick(self) -> float:
-        """Record a cycle and compute rhythm regularity."""
-        now      = time.time()
-        interval = now - self.last_cycle_time
-        self.last_cycle_time = now
-        self.cycle_times.append(interval)
-
-        if len(self.cycle_times) >= 4:
-            times = list(self.cycle_times)
-            mean  = sum(times) / len(times)
-            variance = sum((t - mean) ** 2 for t in times) / len(times)
-            cv    = math.sqrt(variance) / mean if mean > 0 else 0
-            # High CV = irregular rhythm = stress signal
-            self.rhythm_score = round(max(0.0, 1.0 - min(1.0, cv)), 4)
-
-        return self.rhythm_score
-
-    def is_recovery_window(self, load_history: deque) -> bool:
-        """
-        True if we're in a natural recovery window
-        (load just dropped after a sustained high period).
-        """
-        if len(load_history) < 4:
-            return False
-        recent = list(load_history)[-4:]
-        was_high = any(l > LOAD_HIGH for l in recent[:2])
-        now_low  = all(l < LOAD_MODERATE for l in recent[2:])
-        return was_high and now_low
-
-
-# ─── Insula Output ────────────────────────────────────────────────────────────
-
-class InsulaOutput:
-    """
-    Projects interoceptive state to downstream modules.
-
-    The insula's projections in the biological brain:
-    → anterior cingulate (conflict weighting)
-    → amygdala (threat calibration)
-    → prefrontal (decision bias)
-    → hypothalamus (arousal regulation)
-    → motor cortex (action readiness)
-
-    In FORGE, insula output is a bias layer that
-    modulates every other module's outputs — not by
-    overriding them, but by tilting the playing field.
-    """
-
-    def compute(self, state: InteroceptiveState,
-                visceral: ViscerlaSignal,
-                budget: float,
-                thermal: float,
-                wrongness: float,
-                rhythm: float) -> dict:
-
-        mapper = VisceralSignalMapper()
-        conf_bias     = mapper.confidence_bias(state)
-        risk_tol      = mapper.risk_tolerance(state)
-
-        # ACC weighting — low budget amplifies conflict sensitivity
-        acc_weight = round(1.0 + max(0.0, 0.5 - budget) * 0.6, 4)
-
-        # Amygdala calibration — fatigue lowers fear threshold
-        amygdala_calibration = round(
-            1.0 + (1.0 - budget) * 0.2 + thermal * 0.15, 4
-        )
-
-        # Prefrontal bias — depleted state shifts toward habit/default
-        prefrontal_bias = "EXPLORATORY" if budget > 0.6 else \
-                          "BALANCED"    if budget > 0.35 else \
-                          "CONSERVATIVE"
-
-        # Creative window — open only in vital or comfortable states
-        creative_window = state in [
-            InteroceptiveState.VITAL,
-            InteroceptiveState.COMFORTABLE,
-            InteroceptiveState.RECOVERING
-        ]
-
-        # NE request — taxed/overheated states need arousal boost
-        ne_request = round(
-            (thermal * 0.3 + max(0.0, 0.5 - budget) * 0.4)
-            * (1.0 if state == InteroceptiveState.OVERHEATED else 0.7),
-            4
-        )
-
-        return {
-            "confidence_bias":     conf_bias,
-            "risk_tolerance":      risk_tol,
-            "acc_weight":          acc_weight,
-            "amygdala_calibration":amygdala_calibration,
-            "prefrontal_bias":     prefrontal_bias,
-            "creative_window":     creative_window,
-            "ne_request":          ne_request,
-            "wrongness_flag":      wrongness >= WRONGNESS_THRESHOLD,
-            "rhythm_score":        rhythm,
-        }
+    def bias_value(self, markers: list[SomaticMarker]) -> float:
+        """Net valence bias from somatic markers."""
+        if not markers: return 0.0
+        weighted = sum(m.valence * m.strength for m in markers)
+        total_w  = sum(m.strength for m in markers)
+        return round(weighted / max(total_w, 0.01), 3)
 
 
 # ─── FORGE Insula ─────────────────────────────────────────────────────────────
@@ -748,314 +852,323 @@ class InsulaOutput:
 class ForgeInsula:
     def __init__(self):
         self.db          = InsulaDB()
-        self.sensor      = InteroceptiveSensor()
-        self.budget      = BodyBudget(self.db)
-        self.thermal     = ThermalTracker()
-        self.mapper      = VisceralSignalMapper()
-        self.wrongness   = WrongnessDetector(self.db)
-        self.clock       = InsulaClock()
-        self.output_calc = InsulaOutput()
+        self.monitor     = BodyStateMonitor()
+        self.felt_gen    = FeltSenseGenerator()
+        self.classifier  = BodyStateClassifier()
+        self.viscero     = VisceroceptiveInput()
+        self.predictor   = InteroceptivePredictor()
+        self.homeostasis = HomeostaticRegulator(self.db)
+        self.budget      = BodyBudgetManager()
+        self.somatic     = SomaticMarkerSystem(self.db)
         self.cycle       = 0
-        self.prev_state  = InteroceptiveState.COMFORTABLE
+        self.body_history:deque = deque(maxlen=100)
 
-        self.load_history: deque = deque(maxlen=HISTORY_WINDOW)
-
-        # Counters
-        self.total_alarms     = 0
-        self.total_overheats  = 0
-        self.total_depletions = 0
-        self.wrongness_events = 0
-
-    def process(self, signal: dict,
-                acc_health: float = 0.6,
-                amygdala_fear: float = 0.1) -> dict:
+    def sense(self, signal: dict,
+              had_conflict: bool = False,
+              success: bool = True) -> dict:
         """
-        Full insula processing pipeline.
-
-        signal:        raw input signal
-        acc_health:    rolling health from forge_anterior_cingulate
-        amygdala_fear: current fear score from forge_amygdala
+        Full interoceptive processing.
+        Returns complete body state + all downstream effects.
         """
-        t0         = time.time()
         self.cycle += 1
-        threat     = signal.get("threat", 0)
-        confidence = signal.get("confidence", 0.7)
 
-        # 1. Clock tick
-        rhythm = self.clock.tick()
+        # 1. Update internal metrics
+        metrics = self.monitor.update(signal)
+        metrics.cycle = self.cycle
 
-        # 2. Sense internal metrics
-        load, memory_pressure, latency, error_density = self.sensor.sense(
-            signal, acc_health, amygdala_fear, self.cycle
-        )
-        self.load_history.append(load)
+        # 2. Update body budget
+        budget = self.budget.consume(metrics, had_conflict, success)
+        metrics.energy_level = budget.available_energy
+        self.db.save_metrics(metrics)
 
-        # 3. Thermal update
-        thermal = self.thermal.update(load)
-
-        # 4. Body budget update
-        budget_val, budget_event = self.budget.update(load, thermal, threat, self.cycle)
-
-        # 5. Map to interoceptive state + visceral signal
-        state, visceral = self.mapper.map_state(load, budget_val, thermal, error_density)
-
-        # 6. Log state transitions
-        if state != self.prev_state:
-            self.db.log_transition(
-                self.prev_state.value, state.value,
-                f"load={load:.2f},budget={budget_val:.2f}", self.cycle
-            )
-            self.prev_state = state
-
-        # 7. Wrongness detection
-        wrongness_score, wrongness_event = self.wrongness.evaluate(
-            signal, load, confidence, error_density, threat
+        # 3. Generate felt sense
+        felt, intensity, valence, arousal = self.felt_gen.generate(
+            metrics, budget.available_energy
         )
 
-        # 8. Compute output projections
-        output = self.output_calc.compute(
-            state, visceral, budget_val, thermal,
-            wrongness_score, rhythm
+        # 4. Classify body state
+        body_state = self.classifier.classify(metrics, budget.available_energy)
+
+        # 5. Visceroceptive sensing
+        gut_signal, gut_text = self.viscero.sense(metrics, signal)
+
+        # 6. Predict next state
+        history_list = list(self.monitor.history)
+        pred_state, pred_reason = self.predictor.predict(history_list, metrics)
+
+        # 7. Homeostatic regulation
+        homeo_status, homeo_actions = self.homeostasis.regulate(
+            metrics, budget.available_energy, self.cycle
         )
 
-        # 9. Save sample
-        recovery_window = self.clock.is_recovery_window(self.load_history)
-        sample = InteroceptiveSample(
-            cycle           = self.cycle,
-            load            = load,
-            memory_pressure = memory_pressure,
-            latency         = latency,
-            error_density   = error_density,
-            thermal         = thermal,
-            body_budget     = budget_val,
-            state           = state.value,
-            visceral_signal = visceral.value,
-            wrongness       = wrongness_score
+        # 8. Build body state snapshot
+        snapshot = BodyStateSnapshot(
+            body_state      = body_state.value,
+            felt_sense      = felt.value,
+            felt_intensity  = intensity,
+            visceroceptive  = gut_signal.value,
+            homeostatic     = homeo_status.value,
+            energy_level    = budget.available_energy,
+            somatic_valence = valence,
+            somatic_arousal = arousal,
+            prediction_next = pred_state.value,
+            gut_feeling     = gut_text,
+            cycle           = self.cycle
         )
-        self.db.save_sample(sample)
+        self.db.save_body_state(snapshot)
+        self.body_history.append(snapshot)
 
-        # 10. Track alarms
-        if budget_val < BUDGET_ALARM:
-            self.total_alarms += 1
-        if thermal >= THERMAL_ALARM:
-            self.total_overheats += 1
-        if state == InteroceptiveState.DEPLETED:
-            self.total_depletions += 1
-        if wrongness_event:
-            self.wrongness_events += 1
+        # 9. Somatic marker
+        marker = self.somatic.tag(signal, snapshot)
 
-        elapsed = (time.time() - t0) * 1000
+        # 10. Retrieve relevant past markers
+        past_markers = self.somatic.retrieve(signal)
+        somatic_bias = self.somatic.bias_value(past_markers)
 
         return {
-            "cycle":            self.cycle,
-            "state":            state.value,
-            "visceral_signal":  visceral.value,
-            "load":             load,
-            "memory_pressure":  memory_pressure,
-            "latency":          latency,
-            "error_density":    error_density,
-            "thermal":          thermal,
-            "thermal_alarm":    self.thermal.alarm(),
-            "body_budget":      budget_val,
-            "budget_alarm":     budget_val < BUDGET_ALARM,
-            "budget_event":     budget_event.cause if budget_event else "",
-            "wrongness":        wrongness_score,
-            "wrongness_type":   wrongness_event.wrongness_type if wrongness_event else WrongnessType.NONE.value,
-            "wrongness_flag":   wrongness_event is not None,
-            "rhythm_score":     rhythm,
-            "recovery_window":  recovery_window,
-            "output":           output,
-            "processing_ms":    round(elapsed, 2),
-            "total_alarms":     self.total_alarms,
-            "total_overheats":  self.total_overheats,
-            "wrongness_events": self.wrongness_events,
+            "cycle":         self.cycle,
+            "body_state":    body_state.value,
+            "felt_sense":    felt.value,
+            "felt_intensity":intensity,
+            "visceroceptive":gut_signal.value,
+            "gut_feeling":   gut_text,
+            "homeostatic":   homeo_status.value,
+            "prediction":    pred_state.value,
+            "prediction_reason": pred_reason,
+            "metrics": {
+                "load":       metrics.pipeline_load,
+                "latency_ms": metrics.avg_latency_ms,
+                "error_rate": metrics.error_rate,
+                "cortisol":   metrics.cortisol_level,
+                "dopamine":   metrics.dopamine_level,
+                "serotonin":  metrics.serotonin_level,
+                "ne":         metrics.ne_level,
+                "fear":       metrics.fear_score,
+            },
+            "body_budget": {
+                "energy":     budget.available_energy,
+                "consumed":   budget.consumed_this_cycle,
+                "recovery":   budget.recovery_rate,
+                "overdraft":  budget.overdraft,
+                "deficit_cycles": budget.cycles_in_deficit,
+            },
+            "somatic": {
+                "valence":    valence,
+                "arousal":    arousal,
+                "bias":       somatic_bias,
+                "past_markers": len(past_markers),
+            },
+            "homeostatic_actions": homeo_actions[:3],
+            "downstream": {
+                "prefrontal_bias":   round(somatic_bias * 0.15, 4),
+                "salience_modifier": round(arousal * 0.2 + intensity * 0.1, 4),
+                "decision_caution":  round(intensity * 0.2, 4),
+                "memory_importance": round(intensity * 0.3 + abs(valence) * 0.2, 4),
+            }
         }
 
     def get_status(self) -> dict:
-        recent = self.db.get_recent_samples(5)
+        latest = self.body_history[-1] if self.body_history else None
         return {
-            "version":           VERSION,
-            "cycle":             self.cycle,
-            "current_state":     self.prev_state.value,
-            "body_budget":       round(self.budget.budget, 4),
-            "thermal":           round(self.thermal.thermal, 4),
-            "thermal_peak":      round(self.thermal.peak, 4),
-            "hot_cycles":        self.thermal.hot_cycles,
-            "wrongness_level":   round(self.wrongness.wrongness_level, 4),
-            "rhythm_score":      round(self.clock.rhythm_score, 4),
-            "total_alarms":      self.total_alarms,
-            "total_overheats":   self.total_overheats,
-            "total_depletions":  self.total_depletions,
-            "wrongness_events":  self.wrongness_events,
-            "recent_states":     [r[4] for r in recent],
+            "version":       VERSION,
+            "cycle":         self.cycle,
+            "body_state":    latest.body_state if latest else "UNKNOWN",
+            "felt_sense":    latest.felt_sense if latest else "UNKNOWN",
+            "energy":        self.budget.energy,
+            "energy_overdraft": self.budget.energy < 0.15,
+            "deficit_cycles":self.budget.deficit_cycles,
+            "homeostatic":   latest.homeostatic if latest else "UNKNOWN",
+            "gut_feeling":   latest.gut_feeling if latest else "",
+            "prediction":    latest.prediction_next if latest else "",
         }
 
 
 # ─── Rich UI ──────────────────────────────────────────────────────────────────
 
-STATE_COLORS = {
-    "VITAL":       "bright_green",
+BODY_STATE_COLORS = {
+    "THRIVING":    "bright_green",
     "COMFORTABLE": "green",
-    "RECOVERING":  "cyan",
-    "TAXED":       "yellow",
-    "FATIGUED":    "red",
+    "STRAINED":    "yellow",
+    "DISTRESSED":  "orange3",
+    "OVERWHELMED": "red",
     "DEPLETED":    "bright_red",
-    "OVERHEATED":  "orange3",
+    "RECOVERING":  "cyan",
 }
 
-SIGNAL_COLORS = {
-    "EXPAND":    "bright_green",
-    "MAINTAIN":  "green",
-    "CONSERVE":  "yellow",
-    "CONTRACT":  "red",
-    "EMERGENCY": "bright_red",
+FELT_COLORS = {
+    "EASE":      "bright_green",
+    "ALERTNESS": "cyan",
+    "TENSION":   "yellow",
+    "DISCOMFORT":"orange3",
+    "STRAIN":    "red",
+    "PAIN":      "bright_red",
+    "NUMBNESS":  "dim",
 }
 
-def render_insula(result: dict, signal: dict, idx: int):
+VISCERO_COLORS = {
+    "NONE":       "green",
+    "GUT_FEELING":"yellow",
+    "UNEASE":     "orange3",
+    "ALARM":      "red",
+    "NAUSEA":     "bright_red",
+}
+
+def render_insula(result: dict, label: str, idx: int):
     if not HAS_RICH: return
 
-    state    = result["state"]
-    sc       = STATE_COLORS.get(state, "white")
-    visceral = result["visceral_signal"]
-    vc       = SIGNAL_COLORS.get(visceral, "white")
-    budget   = result["body_budget"]
-    bc       = "bright_green" if budget > 0.6 else "yellow" if budget > 0.3 else "bright_red"
-    thermal  = result["thermal"]
-    tc       = "orange3" if thermal > THERMAL_ALARM else "yellow" if thermal > 0.4 else "dim"
+    bs  = result["body_state"]
+    bsc = BODY_STATE_COLORS.get(bs, "white")
+    fs  = result["felt_sense"]
+    fsc = FELT_COLORS.get(fs, "white")
+    vs  = result["visceroceptive"]
+    vsc = VISCERO_COLORS.get(vs, "white")
+    energy = result["body_budget"]["energy"]
+    ec  = "bright_green" if energy>0.6 else "yellow" if energy>0.35 else "red"
 
     console.print(Rule(
-        f"[bold cyan]⬡ INSULA[/bold cyan]  "
-        f"[dim]#{idx}[/dim]  "
-        f"[{sc}]{state}[/{sc}]  "
-        f"[{vc}]{visceral}[/{vc}]  "
-        f"[dim]budget={budget:.2f}  thermal={thermal:.2f}[/dim]"
+        f"[bold cyan]⬡ INSULA[/bold cyan]  [dim]#{idx}[/dim]  "
+        f"[{bsc}]{bs}[/{bsc}]  "
+        f"[{fsc}]{fs}[/{fsc}]  "
+        f"energy=[{ec}]{energy:.3f}[/{ec}]"
     ))
 
-    # Alarm banners
-    if result["state"] == "DEPLETED":
-        console.print(Panel(
-            f"[bold bright_red]⚡ BODY BUDGET CRITICAL — EMERGENCY CONSERVATION[/bold bright_red]\n"
-            f"Budget: {budget:.3f}  |  Thermal: {thermal:.3f}\n"
-            f"[dim]System entering emergency conservative mode.[/dim]",
-            border_style="bright_red"
-        ))
-    elif result["thermal_alarm"]:
-        console.print(Panel(
-            f"[bold orange3]🌡  THERMAL ALARM — SUSTAINED OVERLOAD[/bold orange3]\n"
-            f"Thermal: {thermal:.3f}  |  Hot cycles: {result.get('total_overheats',0)}\n"
-            f"[dim]Error rate elevated. Load reduction recommended.[/dim]",
-            border_style="orange3"
-        ))
-
-    if result["wrongness_flag"]:
-        console.print(Panel(
-            f"[bold magenta]⚠  WRONGNESS DETECTED — {result['wrongness_type']}[/bold magenta]\n"
-            f"Magnitude: {result['wrongness']:.3f}\n"
-            f"[dim]Interoceptive mismatch flagged to ACC.[/dim]",
-            border_style="magenta"
-        ))
-
-    # Metric bars
-    def bar(val, width=12):
-        filled = int(val * width)
-        return "█" * filled + "░" * (width - filled)
-
-    load = result["load"]
-    lc   = "bright_red" if load > LOAD_HIGH else "yellow" if load > LOAD_MODERATE else "green"
-
+    # Left: body state + felt sense
+    met  = result["metrics"]
+    fi   = result["felt_intensity"]
     left_lines = [
-        f"[bold]Load:    [/bold] [{lc}]{bar(load)} {load:.3f}[/{lc}]",
-        f"[bold]Budget:  [/bold] [{bc}]{bar(budget)} {budget:.3f}[/{bc}]",
-        f"[bold]Thermal: [/bold] [{tc}]{bar(thermal)} {thermal:.3f}[/{tc}]",
-        f"[bold]Errors:  [/bold] {bar(result['error_density'])} {result['error_density']:.3f}",
-        f"[bold]Memory:  [/bold] {bar(result['memory_pressure'])} {result['memory_pressure']:.3f}",
+        f"[bold]Body State:[/bold]  [{bsc}]{bs}[/{bsc}]",
+        f"[bold]Felt Sense:[/bold]  [{fsc}]{fs}[/{fsc}] ({fi:.2f})",
+        f"[bold]Valence:[/bold]     {result['somatic']['valence']:+.3f}",
+        f"[bold]Arousal:[/bold]     {result['somatic']['arousal']:.3f}",
         f"",
-        f"[bold]Rhythm:[/bold]   {result['rhythm_score']:.3f}",
-        f"[bold]Recovery:[/bold] {'[cyan]YES[/cyan]' if result['recovery_window'] else '[dim]no[/dim]'}",
+        f"[bold dim]── Vitals ──[/bold dim]",
+        f"Load:      {'█'*int(met['load']*10)}{'░'*(10-int(met['load']*10))} {met['load']:.3f}",
+        f"Latency:   {met['latency_ms']:.1f}ms",
+        f"Cortisol:  {'█'*int(met['cortisol']*10)}{'░'*(10-int(met['cortisol']*10))} {met['cortisol']:.3f}",
+        f"Serotonin: {'█'*int(met['serotonin']*10)}{'░'*(10-int(met['serotonin']*10))} {met['serotonin']:.3f}",
+        f"Dopamine:  {'█'*int(met['dopamine']*10)}{'░'*(10-int(met['dopamine']*10))} {met['dopamine']:.3f}",
     ]
 
-    out = result["output"]
+    # Right: visceroceptive + budget + prediction
+    budget = result["body_budget"]
+    ec2    = "green" if budget["energy"]>0.6 else "yellow" if budget["energy"]>0.35 else "red"
+    pred   = result["prediction"]
+    pbc    = BODY_STATE_COLORS.get(pred,"white")
+
     right_lines = [
-        f"[bold]→ Prefrontal:[/bold]  {out['prefrontal_bias']}",
-        f"[bold]→ Risk tol: [/bold]   {out['risk_tolerance']:.3f}",
-        f"[bold]→ Conf bias:[/bold]   {out['confidence_bias']:+.3f}",
-        f"[bold]→ ACC weight:[/bold]  {out['acc_weight']:.3f}",
-        f"[bold]→ Amyg calib:[/bold] {out['amygdala_calibration']:.3f}",
-        f"[bold]→ NE request:[/bold] {out['ne_request']:.3f}",
-        f"[bold]→ Creative:  [/bold]  {'[green]OPEN[/green]' if out['creative_window'] else '[dim]closed[/dim]'}",
-        f"[bold]→ Wrongness: [/bold]  {'[magenta]FLAG[/magenta]' if out['wrongness_flag'] else '[dim]clear[/dim]'}",
+        f"[bold]Gut feeling:[/bold]  [{vsc}]{vs}[/{vsc}]",
+    ]
+    if result.get("gut_feeling"):
+        right_lines.append(f"[{vsc}][dim]{result['gut_feeling'][:45]}[/dim][/{vsc}]")
+
+    right_lines += [
+        f"",
+        f"[bold dim]── Body Budget ──[/bold dim]",
+        f"Energy:   [{ec2}]{'█'*int(budget['energy']*10)}{'░'*(10-int(budget['energy']*10))} {budget['energy']:.3f}[/{ec2}]",
+        f"Consumed: {budget['consumed']:.4f}/cycle",
+        f"Recovery: +{budget['recovery']:.4f}/cycle",
+        f"{'[red]⚠ OVERDRAFT[/red]' if budget['overdraft'] else '[dim]Budget OK[/dim]'}",
+        f"",
+        f"[bold dim]── Prediction ──[/bold dim]",
+        f"Next:     [{pbc}]{pred}[/{pbc}]",
+        f"[dim]{result['prediction_reason'][:40]}[/dim]",
+        f"Homeost:  {result['homeostatic']}",
     ]
 
     console.print(Columns([
-        Panel("\n".join(left_lines),  title=f"[bold {sc}]Internal State[/bold {sc}]", border_style=sc),
-        Panel("\n".join(right_lines), title="[bold]Output Projections[/bold]",        border_style="dim")
+        Panel("\n".join(left_lines), title=f"[bold {bsc}]Interoception[/bold {bsc}]", border_style=bsc),
+        Panel("\n".join(right_lines),title="[bold]Body Budget + Gut[/bold]",           border_style=vsc)
     ]))
+
+    # Downstream effects
+    ds = result["downstream"]
+    ha = result["homeostatic_actions"]
+    if ha:
+        actions_str = "  ".join(
+            f"[dim]{a['metric']}[/dim]→[cyan]{a['action']}[/cyan]"
+            for a in ha[:2]
+        )
+        console.print(f"  [dim]Homeostatic: {actions_str}[/dim]")
+    console.print(
+        f"  [dim]Downstream → prefrontal bias: {ds['prefrontal_bias']:+.4f}  "
+        f"sal modifier: {ds['salience_modifier']:.4f}  "
+        f"mem importance: {ds['memory_importance']:.4f}[/dim]"
+    )
 
 
 def run_demo():
     if HAS_RICH:
         console.print(Panel.fit(
             "[bold cyan]FORGE INSULA[/bold cyan]\n"
-            "[dim]Interoception · Body Budget · Visceral Signal · Wrongness Detection[/dim]\n"
-            f"[dim]Version {VERSION}  |  Port {API_PORT}[/dim]",
+            "[dim]Interoception · Body State · Gut Feelings · Somatic Markers[/dim]\n"
+            f"[dim]Version {VERSION}[/dim]",
             border_style="cyan"
         ))
 
     insula = ForgeInsula()
 
     scenarios = [
-        # Fresh system — low load, good budget
-        ({"threat":0,"anomaly":False,"confidence":0.85,"active_modules":8,
-          "processing_ms":15,"social":{"trust_score":0.9}},
-         0.80, 0.05, "Fresh start — optimal internal state"),
+        # Calm baseline
+        ({"threat":0,"anomaly":False,"entity_name":"alice_tech",
+          "salience_score":0.2,"pipeline_ms":180,"error_rate":0.0,
+          "decision":"MONITOR","memory_action":"NEW_MEMORY",
+          "fear_score":0.0,"conflict_rate":0.0,
+          "neuro_state":{"profile":{"cortisol":0.15,"dopamine":0.55,
+          "serotonin":0.68,"norepinephrine":0.18}}},
+         False, True, "Calm baseline — thriving"),
 
-        # Moderate work — budget starts to spend
-        ({"threat":1,"anomaly":False,"confidence":0.70,"active_modules":15,
-          "processing_ms":30,"social":{"trust_score":0.7}},
-         0.65, 0.15, "Moderate load — budget draining slowly"),
+        # Load building
+        ({"threat":1,"anomaly":False,"entity_name":"unknown_x",
+          "salience_score":0.45,"pipeline_ms":240,"error_rate":0.1,
+          "decision":"ALERT","memory_action":"NEW_MEMORY",
+          "fear_score":0.2,"conflict_rate":0.3,
+          "neuro_state":{"profile":{"cortisol":0.35,"dopamine":0.48,
+          "serotonin":0.60,"norepinephrine":0.35}}},
+         True, True, "Load building — gut feeling rising"),
 
-        # Sudden threat — sharp budget draw
-        ({"threat":3,"anomaly":True,"confidence":0.45,"active_modules":20,
-          "processing_ms":55,"social":{"trust_score":0.3}},
-         0.40, 0.65, "Sudden threat — sharp budget draw"),
+        # Crisis — cortisol spiked
+        ({"threat":4,"anomaly":True,"entity_name":"unknown_x",
+          "salience_score":0.95,"pipeline_ms":320,"error_rate":0.0,
+          "decision":"EMERGENCY_BLOCK","memory_action":"NEW_MEMORY",
+          "fear_score":1.0,"conflict_rate":0.8,
+          "neuro_state":{"profile":{"cortisol":0.82,"dopamine":0.91,
+          "serotonin":0.42,"norepinephrine":0.94}}},
+         True, True, "Crisis — overwhelmed, visceral alarm"),
 
-        # Sustained high load — thermal rising
-        ({"threat":2,"anomaly":True,"confidence":0.40,"active_modules":25,
-          "processing_ms":70,"social":{"trust_score":0.4}},
-         0.35, 0.50, "Sustained high load — thermal climbing"),
+        # Sustained crisis — energy depleting
+        ({"threat":3,"anomaly":True,"entity_name":"unknown_x",
+          "salience_score":0.85,"pipeline_ms":380,"error_rate":0.2,
+          "decision":"BLOCK","memory_action":"RECONSOLIDATED",
+          "fear_score":0.85,"conflict_rate":0.7,
+          "neuro_state":{"profile":{"cortisol":0.88,"dopamine":0.85,
+          "serotonin":0.32,"norepinephrine":0.88}}},
+         True, True, "Sustained crisis — body budget draining"),
 
-        # Wrongness: high trust + high threat contradiction
-        ({"threat":3,"anomaly":False,"confidence":0.80,"active_modules":18,
-          "processing_ms":40,"social":{"trust_score":0.85}},
-         0.45, 0.40, "Wrongness: trusted entity triggering threat"),
-
-        # Thermal alarm — overheated
-        ({"threat":2,"anomaly":True,"confidence":0.35,"active_modules":30,
-          "processing_ms":90,"social":{"trust_score":0.2}},
-         0.25, 0.70, "Thermal alarm — system overheated"),
-
-        # Critical depletion
-        ({"threat":3,"anomaly":True,"confidence":0.25,"active_modules":35,
-          "processing_ms":95,"social":{"trust_score":0.1}},
-         0.15, 0.85, "Critical depletion — emergency mode"),
-
-        # Recovery begins
-        ({"threat":0,"anomaly":False,"confidence":0.70,"active_modules":10,
-          "processing_ms":20,"social":{"trust_score":0.8}},
-         0.55, 0.10, "Recovery — load drops, budget begins refilling"),
+        # Partial recovery
+        ({"threat":1,"anomaly":False,"entity_name":"security_team",
+          "salience_score":0.35,"pipeline_ms":260,"error_rate":0.05,
+          "decision":"MONITOR","memory_action":"NEW_MEMORY",
+          "fear_score":0.3,"conflict_rate":0.2,
+          "neuro_state":{"profile":{"cortisol":0.55,"dopamine":0.72,
+          "serotonin":0.45,"norepinephrine":0.42}}},
+         False, True, "Partial recovery — cortisol clearing"),
 
         # Full recovery
-        ({"threat":0,"anomaly":False,"confidence":0.85,"active_modules":8,
-          "processing_ms":12,"social":{"trust_score":0.9}},
-         0.80, 0.05, "Full recovery — vital state restored"),
+        ({"threat":0,"anomaly":False,"entity_name":"alice_tech",
+          "salience_score":0.2,"pipeline_ms":190,"error_rate":0.0,
+          "decision":"COLLABORATE","memory_action":"NEW_MEMORY",
+          "fear_score":0.05,"conflict_rate":0.0,
+          "neuro_state":{"profile":{"cortisol":0.22,"dopamine":0.60,
+          "serotonin":0.58,"norepinephrine":0.22}}},
+         False, True, "Recovery — body rebuilding"),
     ]
 
-    for i, (sig, acc_h, amyg_f, label) in enumerate(scenarios):
+    for i, (sig, conflict, success, label) in enumerate(scenarios):
         if HAS_RICH:
             console.print(f"\n[bold dim]━━━ {i+1}: {label.upper()} ━━━[/bold dim]")
-        result = insula.process(sig, acc_h, amyg_f)
-        render_insula(result, sig, i+1)
-        time.sleep(0.08)
+        result = insula.sense(sig, conflict, success)
+        render_insula(result, label, i+1)
+        time.sleep(0.1)
 
     # Final status
     if HAS_RICH:
@@ -1063,26 +1176,41 @@ def run_demo():
         status = insula.get_status()
 
         st = Table(box=box.DOUBLE_EDGE, border_style="cyan", title="Insula Status")
-        st.add_column("Metric",  style="cyan")
-        st.add_column("Value",   style="white")
-        st.add_row("Cycles",         str(status["cycle"]))
-        st.add_row("Current State",  status["current_state"])
-        st.add_row("Body Budget",    f"{status['body_budget']:.3f}")
-        st.add_row("Thermal",        f"{status['thermal']:.3f}")
-        st.add_row("Thermal Peak",   f"{status['thermal_peak']:.3f}")
-        st.add_row("Hot Cycles",     str(status["hot_cycles"]))
-        st.add_row("Rhythm Score",   f"{status['rhythm_score']:.3f}")
-        st.add_row("Budget Alarms",  str(status["total_alarms"]))
-        st.add_row("Overheats",      str(status["total_overheats"]))
-        st.add_row("Depletions",     str(status["total_depletions"]))
-        st.add_row("Wrongness Events",str(status["wrongness_events"]))
+        st.add_column("Metric", style="cyan")
+        st.add_column("Value",  style="white")
+        bsc = BODY_STATE_COLORS.get(status["body_state"],"white")
+        st.add_row("Cycles",        str(status["cycle"]))
+        st.add_row("Body State",    status["body_state"])
+        st.add_row("Felt Sense",    status["felt_sense"])
+        st.add_row("Energy",        f"{status['energy']:.3f}")
+        st.add_row("Overdraft",     str(status["energy_overdraft"]))
+        st.add_row("Homeostatic",   status["homeostatic"])
+        st.add_row("Prediction",    status["prediction"])
+        if status["gut_feeling"]:
+            st.add_row("Gut Feeling", status["gut_feeling"][:50])
         console.print(st)
 
-        if status["recent_states"]:
-            console.print(Rule("[dim]Recent State History[/dim]"))
-            for s in reversed(status["recent_states"]):
-                sc2 = STATE_COLORS.get(s, "white")
-                console.print(f"  [{sc2}]{s}[/{sc2}]")
+        # Body state history
+        rows = insula.db.get_body_states(6)
+        if rows:
+            ht = Table(box=box.SIMPLE, title="Body State History", title_style="dim")
+            ht.add_column("Time",     width=10)
+            ht.add_column("State",    width=14)
+            ht.add_column("Felt",     width=12)
+            ht.add_column("Intensity",justify="right", width=10)
+            ht.add_column("Energy",   justify="right", width=8)
+            for row in rows:
+                ts, bs, fs, fi, el, sv = row
+                bsc2 = BODY_STATE_COLORS.get(bs,"white")
+                fsc2 = FELT_COLORS.get(fs,"white")
+                ht.add_row(
+                    ts[11:19],
+                    f"[{bsc2}]{bs}[/{bsc2}]",
+                    f"[{fsc2}]{fs}[/{fsc2}]",
+                    f"{fi:.2f}",
+                    f"{el:.3f}"
+                )
+            console.print(ht)
 
 
 # ─── HTTP API ─────────────────────────────────────────────────────────────────
@@ -1091,41 +1219,38 @@ def run_api(insula: ForgeInsula):
     if not HAS_FLASK: return
     app = Flask(__name__)
 
-    @app.route("/process", methods=["POST"])
-    def process():
-        body   = request.json or {}
-        signal = body.get("signal", {})
-        acc_h  = body.get("acc_health", 0.6)
-        amyg_f = body.get("amygdala_fear", 0.1)
-        return jsonify(insula.process(signal, acc_h, amyg_f))
+    @app.route("/sense", methods=["POST"])
+    def sense():
+        data = request.json or {}
+        return jsonify(insula.sense(
+            data.get("signal",{}),
+            data.get("had_conflict", False),
+            data.get("success", True)
+        ))
+
+    @app.route("/body_state", methods=["GET"])
+    def body_state():
+        latest = insula.body_history[-1] if insula.body_history else None
+        if not latest:
+            return jsonify({"status": "no_data"})
+        return jsonify({
+            "body_state":   latest.body_state,
+            "felt_sense":   latest.felt_sense,
+            "energy":       insula.budget.energy,
+            "gut_feeling":  latest.gut_feeling,
+            "prediction":   latest.prediction_next,
+        })
 
     @app.route("/status", methods=["GET"])
     def status():
         return jsonify(insula.get_status())
 
-    @app.route("/samples", methods=["GET"])
-    def samples():
-        rows = insula.db.get_recent_samples(20)
+    @app.route("/history", methods=["GET"])
+    def history():
+        rows = insula.db.get_body_states(20)
         return jsonify([{
-            "cycle": r[0], "load": r[1], "thermal": r[2],
-            "budget": r[3], "state": r[4],
-            "visceral": r[5], "wrongness": r[6]
-        } for r in rows])
-
-    @app.route("/budget", methods=["GET"])
-    def budget():
-        rows = insula.db.get_budget_history(20)
-        return jsonify([{
-            "cycle": r[0], "before": r[1], "after": r[2],
-            "delta": r[3], "cause": r[4], "alarm": bool(r[5])
-        } for r in rows])
-
-    @app.route("/wrongness", methods=["GET"])
-    def wrongness():
-        rows = insula.db.get_wrongness_events(10)
-        return jsonify([{
-            "timestamp": r[0], "type": r[1], "magnitude": r[2],
-            "source": r[3], "description": r[4]
+            "timestamp":r[0],"body_state":r[1],"felt_sense":r[2],
+            "intensity":r[3],"energy":r[4],"valence":r[5]
         } for r in rows])
 
     app.run(host="0.0.0.0", port=API_PORT, debug=False)

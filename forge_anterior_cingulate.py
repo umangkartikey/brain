@@ -1,54 +1,52 @@
 """
 FORGE Anterior Cingulate Cortex — forge_anterior_cingulate.py
-===============================================================
+==============================================================
 AI analog of the brain's anterior cingulate cortex (ACC).
 
-The ACC is the brain's conflict detector and error monitor —
-a watchdog sitting between emotion and cognition, constantly
-asking: "Are the signals agreeing? Is something going wrong?"
+The ACC sits at the intersection of cognition and emotion.
+It is the brain's CONFLICT MONITOR — continuously watching
+for situations where competing signals, responses, or beliefs
+are simultaneously active and incompatible.
 
-It receives input from virtually every brain region and has
-direct projections back to motor cortex, prefrontal, and
-subcortical systems. It doesn't make decisions — it raises
-flags when decisions are at risk of being wrong.
+Three core functions:
 
-Key insight: The ACC doesn't know what the right answer is.
-It only knows when the system is UNCERTAIN or CONFLICTED.
-That signal alone is enough to redirect cognitive resources.
+  1. CONFLICT DETECTION
+     When two or more responses are simultaneously activated
+     and incompatible, the ACC fires an alert signal.
+     This signal recruits additional cognitive control.
+     Classic example: Stroop task — "RED" written in blue ink.
+     Both "red" and "blue" activate simultaneously → conflict.
 
-Four core functions:
+     In FORGE: threat=4 + intent=COOPERATIVE_REQUEST → conflict
+               basal_ganglia=BLOCK + limbic=trust → conflict
+               thalamus=CRISIS + amygdala=no_fear → conflict
 
-  1. CONFLICT DETECTION (module disagreement monitor)
-     When forge_amygdala says ALARM but forge_prefrontal says
-     SAFE — that's conflict. The ACC fires, halts action,
-     and routes the signal to deeper deliberation.
-     The stronger the disagreement, the louder the flag.
+  2. ERROR MONITORING (Error-Related Negativity)
+     The ACC generates an error signal when outcomes
+     deviate from expectations. This is distinct from the
+     cerebellum's timing error — the ACC monitors MEANING.
+     Not "that was 10ms late" but "that was WRONG."
 
-  2. ERROR MONITORING (post-decision mismatch)
-     Expected outcome vs actual outcome.
-     If forge_conscious predicted X but got Y — ACC fires.
-     This is the neural basis of the "oops" feeling.
-     Generates an Error-Related Negativity (ERN) signal.
+  3. PERFORMANCE MONITORING
+     Tracks performance over time. When errors cluster,
+     ACC increases cognitive control allocation.
+     When performance is smooth, control is relaxed.
+     This is the neural basis of effort regulation.
 
-  3. PERFORMANCE MONITORING (degradation detection)
-     Tracks rolling accuracy / coherence of the whole system.
-     If recent cycles are producing low-confidence outputs,
-     ACC escalates arousal to force recalibration.
-
-  4. PAIN/SALIENCE GATING
-     The ACC processes social pain and physical pain equally.
-     Exclusion, rejection, loss — these activate the same
-     ACC circuits as physical injury. This module uses that
-     property to flag when inputs carry "social threat" even
-     when explicit threat scores are low.
+Additional functions:
+  - Pain processing (cognitive component of pain)
+  - Emotional regulation (mediates limbic ↔ prefrontal)
+  - Autonomic regulation (heart rate, cortisol modulation)
+  - Motivation monitoring (effort vs reward tradeoff)
 
 Architecture:
-  ConflictDetector     → multi-module disagreement scanner
-  ErrorMonitor         → expected vs actual outcome tracker
-  PerformanceTracker   → rolling system health index
-  SalienceGate         → social/pain signal amplifier
-  ACCOutput            → routes flags to metacognition + prefrontal
-  ResolutionEngine     → suggests how to resolve detected conflicts
+  ConflictDetector     → simultaneous incompatible activations
+  ErrorMonitor         → outcome deviation from expectation
+  PerformanceTracker   → running accuracy and effort metrics
+  CognitiveController  → allocates control based on conflict/error
+  EmotionRegulator     → mediates limbic ↔ prefrontal conflict
+  MotivationEngine     → effort vs reward evaluation
+  PainAnalog           → models cognitive cost of sustained conflict
 """
 
 import json
@@ -58,7 +56,7 @@ import sqlite3
 import threading
 import math
 from datetime import datetime
-from collections import deque
+from collections import deque, defaultdict
 from typing import Optional
 from dataclasses import dataclass, field
 from enum import Enum
@@ -84,89 +82,117 @@ except ImportError:
 # ─── Constants ────────────────────────────────────────────────────────────────
 
 DB_PATH  = "forge_anterior_cingulate.db"
-API_PORT = 7798
+API_PORT = 7794
 VERSION  = "1.0.0"
 
 # Conflict thresholds
-CONFLICT_LOW       = 0.20   # minor disagreement — log only
-CONFLICT_MODERATE  = 0.40   # moderate — flag to metacognition
-CONFLICT_HIGH      = 0.65   # high — halt and re-evaluate
-CONFLICT_CRITICAL  = 0.85   # critical — override and escalate
+CONFLICT_MILD     = 0.25
+CONFLICT_MODERATE = 0.50
+CONFLICT_SEVERE   = 0.75
 
 # Error monitoring
-ERROR_DECAY        = 0.08   # how fast error signal fades
-ERROR_SPIKE        = 0.45   # how much a mismatch spikes the ERN
+ERN_THRESHOLD     = 0.30   # error-related negativity threshold
+PERFORMANCE_WINDOW= 20     # cycles for performance tracking
 
-# Performance tracking
-PERF_WINDOW        = 20     # rolling window size (cycles)
-PERF_ALARM_THRESH  = 0.45   # below this → performance alarm
+# Cognitive control
+CONTROL_BOOST_RATE= 0.15   # how fast control allocation increases
+CONTROL_DECAY_RATE= 0.05   # how fast control relaxes after success
 
-# Social pain amplification
-SOCIAL_PAIN_BOOST  = 0.30   # social threat adds to conflict score
+# Effort/motivation
+EFFORT_COST_RATE  = 0.08   # cognitive cost per conflict
+RECOVERY_RATE     = 0.04   # recovery per quiet cycle
 
 console = Console() if HAS_RICH else None
 
 # ─── Enums ────────────────────────────────────────────────────────────────────
 
-class ConflictLevel(Enum):
-    NONE     = "NONE"
-    LOW      = "LOW"
-    MODERATE = "MODERATE"
-    HIGH     = "HIGH"
-    CRITICAL = "CRITICAL"
+class ConflictType(Enum):
+    RESPONSE_CONFLICT    = "RESPONSE_CONFLICT"    # two actions competing
+    INFORMATION_CONFLICT = "INFORMATION_CONFLICT" # contradictory signals
+    EMOTIONAL_CONFLICT   = "EMOTIONAL_CONFLICT"   # emotion vs cognition
+    GOAL_CONFLICT        = "GOAL_CONFLICT"         # competing goals
+    PREDICTION_CONFLICT  = "PREDICTION_CONFLICT"  # reality vs expectation
+    NONE                 = "NONE"
 
 class ErrorType(Enum):
-    OUTCOME_MISMATCH  = "OUTCOME_MISMATCH"   # predicted X, got Y
-    CONFIDENCE_CRASH  = "CONFIDENCE_CRASH"   # module confidence dropped suddenly
-    MODULE_DROPOUT    = "MODULE_DROPOUT"     # expected module went silent
-    LOOP_DETECTED     = "LOOP_DETECTED"      # same conflict recurring
-    SOCIAL_VIOLATION  = "SOCIAL_VIOLATION"   # social norm unexpectedly broken
+    COMMISSION   = "COMMISSION"    # did wrong thing
+    OMISSION     = "OMISSION"      # failed to do right thing
+    TIMING       = "TIMING"        # correct action, wrong time
+    MAGNITUDE    = "MAGNITUDE"     # correct direction, wrong strength
+    NONE         = "NONE"
 
-class ResolutionStrategy(Enum):
-    DEFER_TO_PREFRONTAL  = "DEFER_TO_PREFRONTAL"   # let reason decide
-    DEFER_TO_AMYGDALA    = "DEFER_TO_AMYGDALA"     # let instinct decide
-    PAUSE_AND_GATHER     = "PAUSE_AND_GATHER"       # collect more signal
-    ESCALATE_AROUSAL     = "ESCALATE_AROUSAL"       # boost attention/NE
-    INHIBIT_ACTION       = "INHIBIT_ACTION"         # freeze until resolved
-    NOTIFY_METACOGNITION = "NOTIFY_METACOGNITION"   # surface to self-awareness
+class ControlLevel(Enum):
+    MINIMAL   = "MINIMAL"     # < 0.25 — almost automatic
+    LOW       = "LOW"         # 0.25-0.50 — routine monitoring
+    MODERATE  = "MODERATE"    # 0.50-0.70 — active oversight
+    HIGH      = "HIGH"        # 0.70-0.85 — intensive control
+    MAXIMUM   = "MAXIMUM"     # > 0.85 — full executive engagement
+
+class PerformanceState(Enum):
+    EXCELLENT = "EXCELLENT"   # > 90% success
+    GOOD      = "GOOD"        # 75-90%
+    MODERATE  = "MODERATE"    # 55-75%
+    POOR      = "POOR"        # 35-55%
+    FAILING   = "FAILING"     # < 35%
 
 # ─── Data Models ──────────────────────────────────────────────────────────────
 
 @dataclass
-class ConflictEvent:
-    """A detected conflict between modules or signals."""
-    id:             str   = field(default_factory=lambda: str(uuid.uuid4())[:8])
-    timestamp:      str   = field(default_factory=lambda: datetime.now().isoformat())
-    modules:        list  = field(default_factory=list)   # conflicting modules
-    conflict_score: float = 0.0
-    level:          str   = ConflictLevel.NONE.value
-    description:    str   = ""
-    resolution:     str   = ResolutionStrategy.PAUSE_AND_GATHER.value
-    resolved:       bool  = False
-    cycles_open:    int   = 0
+class ConflictSignal:
+    """A detected conflict between competing signals or responses."""
+    id:           str   = field(default_factory=lambda: str(uuid.uuid4())[:8])
+    timestamp:    str   = field(default_factory=lambda: datetime.now().isoformat())
+    conflict_type:str   = ConflictType.NONE.value
+    sources:      list  = field(default_factory=list)   # which modules conflict
+    signals:      dict  = field(default_factory=dict)   # conflicting values
+    strength:     float = 0.0   # 0-1 how severe
+    resolution:   str   = ""    # how was it resolved
+    control_recruited:float=0.0 # how much extra control was allocated
+    cycle:        int   = 0
 
 @dataclass
 class ErrorSignal:
-    """An error-related negativity event."""
-    id:             str   = field(default_factory=lambda: str(uuid.uuid4())[:8])
-    timestamp:      str   = field(default_factory=lambda: datetime.now().isoformat())
-    error_type:     str   = ErrorType.OUTCOME_MISMATCH.value
-    predicted:      str   = ""
-    actual:         str   = ""
-    ern_magnitude:  float = 0.0   # Error-Related Negativity strength
-    source_module:  str   = ""
-    corrected:      bool  = False
+    """An error detected by the ACC."""
+    id:           str   = field(default_factory=lambda: str(uuid.uuid4())[:8])
+    timestamp:    str   = field(default_factory=lambda: datetime.now().isoformat())
+    error_type:   str   = ErrorType.NONE.value
+    module:       str   = ""
+    expected:     str   = ""
+    actual:       str   = ""
+    ern_amplitude:float = 0.0   # error-related negativity strength
+    pe_amplitude: float = 0.0   # post-error positivity
+    corrected:    bool  = False
+    cycle:        int   = 0
 
 @dataclass
-class PerformanceSample:
-    """A single system performance snapshot."""
+class PerformanceMetrics:
+    """Rolling performance metrics over recent cycles."""
     timestamp:      str   = field(default_factory=lambda: datetime.now().isoformat())
     cycle:          int   = 0
-    confidence:     float = 0.0
-    conflict_score: float = 0.0
+    success_rate:   float = 1.0
+    conflict_rate:  float = 0.0
     error_rate:     float = 0.0
-    module_count:   int   = 0
-    health_score:   float = 0.0
+    control_level:  float = 0.0
+    effort_cost:    float = 0.0
+    motivation:     float = 0.8
+    state:          str   = PerformanceState.EXCELLENT.value
+
+@dataclass
+class ACCOutput:
+    """Complete output from the ACC for downstream modules."""
+    timestamp:      str   = field(default_factory=lambda: datetime.now().isoformat())
+    cycle:          int   = 0
+    conflict:       Optional[ConflictSignal] = None
+    error:          Optional[ErrorSignal]    = None
+    control_level:  float = 0.0
+    control_label:  str   = ControlLevel.LOW.value
+    attention_boost:float = 0.0   # boost to prefrontal attention
+    error_flag:     bool  = False
+    conflict_flag:  bool  = False
+    performance:    str   = PerformanceState.EXCELLENT.value
+    effort_cost:    float = 0.0
+    motivation:     float = 0.8
+    recommendation: str   = ""
 
 # ─── Database ─────────────────────────────────────────────────────────────────
 
@@ -179,90 +205,88 @@ class ACCDB:
     def _init(self):
         with self.lock:
             self.conn.executescript("""
-                CREATE TABLE IF NOT EXISTS conflicts (
+                CREATE TABLE IF NOT EXISTS conflict_signals (
                     id TEXT PRIMARY KEY, timestamp TEXT,
-                    modules TEXT, conflict_score REAL,
-                    level TEXT, description TEXT,
-                    resolution TEXT, resolved INTEGER,
-                    cycles_open INTEGER
+                    conflict_type TEXT, sources TEXT,
+                    signals TEXT, strength REAL,
+                    resolution TEXT, control_recruited REAL, cycle INTEGER
                 );
                 CREATE TABLE IF NOT EXISTS error_signals (
                     id TEXT PRIMARY KEY, timestamp TEXT,
-                    error_type TEXT, predicted TEXT,
-                    actual TEXT, ern_magnitude REAL,
-                    source_module TEXT, corrected INTEGER
+                    error_type TEXT, module TEXT,
+                    expected TEXT, actual TEXT,
+                    ern_amplitude REAL, pe_amplitude REAL,
+                    corrected INTEGER, cycle INTEGER
                 );
                 CREATE TABLE IF NOT EXISTS performance_log (
-                    id TEXT PRIMARY KEY, timestamp TEXT,
-                    cycle INTEGER, confidence REAL,
-                    conflict_score REAL, error_rate REAL,
-                    module_count INTEGER, health_score REAL
+                    cycle INTEGER PRIMARY KEY, timestamp TEXT,
+                    success_rate REAL, conflict_rate REAL,
+                    error_rate REAL, control_level REAL,
+                    effort_cost REAL, motivation REAL, state TEXT
                 );
-                CREATE TABLE IF NOT EXISTS resolution_log (
+                CREATE TABLE IF NOT EXISTS control_log (
                     id TEXT PRIMARY KEY, timestamp TEXT,
-                    conflict_id TEXT, strategy TEXT,
-                    outcome TEXT, cycles_to_resolve INTEGER
+                    trigger TEXT, control_before REAL,
+                    control_after REAL, reason TEXT, cycle INTEGER
                 );
             """)
             self.conn.commit()
 
-    def save_conflict(self, c: ConflictEvent):
+    def save_conflict(self, c: ConflictSignal):
         with self.lock:
             self.conn.execute("""
-                INSERT OR REPLACE INTO conflicts VALUES (?,?,?,?,?,?,?,?,?)
-            """, (c.id, c.timestamp, json.dumps(c.modules),
-                  c.conflict_score, c.level, c.description,
-                  c.resolution, int(c.resolved), c.cycles_open))
+                INSERT OR REPLACE INTO conflict_signals VALUES
+                (?,?,?,?,?,?,?,?,?)
+            """, (c.id, c.timestamp, c.conflict_type,
+                  json.dumps(c.sources), json.dumps(c.signals),
+                  c.strength, c.resolution, c.control_recruited, c.cycle))
             self.conn.commit()
 
     def save_error(self, e: ErrorSignal):
         with self.lock:
             self.conn.execute("""
-                INSERT OR REPLACE INTO error_signals VALUES (?,?,?,?,?,?,?,?)
-            """, (e.id, e.timestamp, e.error_type, e.predicted,
-                  e.actual, e.ern_magnitude, e.source_module,
-                  int(e.corrected)))
+                INSERT OR REPLACE INTO error_signals VALUES
+                (?,?,?,?,?,?,?,?,?,?)
+            """, (e.id, e.timestamp, e.error_type, e.module,
+                  e.expected, e.actual, e.ern_amplitude,
+                  e.pe_amplitude, int(e.corrected), e.cycle))
             self.conn.commit()
 
-    def save_performance(self, p: PerformanceSample):
+    def save_performance(self, p: PerformanceMetrics):
         with self.lock:
             self.conn.execute("""
-                INSERT INTO performance_log VALUES (?,?,?,?,?,?,?,?)
-            """, (str(uuid.uuid4())[:8], p.timestamp, p.cycle,
-                  p.confidence, p.conflict_score, p.error_rate,
-                  p.module_count, p.health_score))
+                INSERT OR REPLACE INTO performance_log VALUES
+                (?,?,?,?,?,?,?,?,?)
+            """, (p.cycle, p.timestamp, p.success_rate,
+                  p.conflict_rate, p.error_rate, p.control_level,
+                  p.effort_cost, p.motivation, p.state))
             self.conn.commit()
 
-    def log_resolution(self, conflict_id: str, strategy: str,
-                       outcome: str, cycles: int):
+    def log_control_change(self, trigger: str, before: float,
+                           after: float, reason: str, cycle: int):
         with self.lock:
             self.conn.execute("""
-                INSERT INTO resolution_log VALUES (?,?,?,?,?,?)
+                INSERT INTO control_log VALUES (?,?,?,?,?,?,?)
             """, (str(uuid.uuid4())[:8], datetime.now().isoformat(),
-                  conflict_id, strategy, outcome, cycles))
+                  trigger, before, after, reason, cycle))
             self.conn.commit()
 
-    def get_recent_conflicts(self, limit=15):
+    def get_recent_conflicts(self, limit=10):
         with self.lock:
             return self.conn.execute("""
-                SELECT timestamp, modules, conflict_score, level,
-                       description, resolution, resolved
-                FROM conflicts ORDER BY timestamp DESC LIMIT ?
+                SELECT timestamp, conflict_type, strength,
+                       sources, resolution
+                FROM conflict_signals
+                ORDER BY timestamp DESC LIMIT ?
             """, (limit,)).fetchall()
 
     def get_recent_errors(self, limit=10):
         with self.lock:
             return self.conn.execute("""
-                SELECT timestamp, error_type, predicted, actual,
-                       ern_magnitude, source_module
-                FROM error_signals ORDER BY timestamp DESC LIMIT ?
-            """, (limit,)).fetchall()
-
-    def get_health_trend(self, limit=20):
-        with self.lock:
-            return self.conn.execute("""
-                SELECT cycle, health_score, conflict_score, error_rate
-                FROM performance_log ORDER BY cycle DESC LIMIT ?
+                SELECT timestamp, error_type, module,
+                       expected, actual, ern_amplitude
+                FROM error_signals
+                ORDER BY timestamp DESC LIMIT ?
             """, (limit,)).fetchall()
 
 
@@ -270,613 +294,708 @@ class ACCDB:
 
 class ConflictDetector:
     """
-    Scans module outputs for disagreement.
+    Detects simultaneous incompatible activations.
+    The ACC's primary function — finds the contradiction
+    before it propagates through the system.
 
-    The ACC doesn't know which module is right.
-    It only knows they disagree — and that disagreement
-    itself is a signal requiring attention.
-
-    Conflict types detected:
-      VALENCE CONFLICT   — one module says good, another says bad
-      CONFIDENCE SPREAD  — modules have wildly different certainty
-      PRIORITY CONFLICT  — multiple modules claim urgent attention
-      TEMPORAL CONFLICT  — current signal contradicts recent history
+    Conflict rules:
+      Threat ≥ 3 + cooperative intent     → INFORMATION_CONFLICT
+      Amygdala hijack + no salience alarm  → PREDICTION_CONFLICT
+      Basal ganglia BLOCK + limbic TRUST   → RESPONSE_CONFLICT
+      Thalamus CRISIS + low fear score     → PREDICTION_CONFLICT
+      Prefrontal STANDBY + high threat     → RESPONSE_CONFLICT
+      Emotion FEAR + action APPROACH       → EMOTIONAL_CONFLICT
+      Multiple goals competing             → GOAL_CONFLICT
     """
 
-    def detect(self, module_outputs: dict) -> tuple[float, str, list]:
-        """
-        Returns (conflict_score, description, conflicting_modules).
-        module_outputs: {module_name: {"valence": float, "confidence": float, ...}}
-        """
-        conflict_score = 0.0
-        conflicts_found = []
-        description_parts = []
+    CONFLICT_RULES = [
+        {
+            "id":   "CR_001",
+            "name": "threat_cooperative_conflict",
+            "type": ConflictType.INFORMATION_CONFLICT,
+            "check": lambda s: (
+                s.get("threat", 0) >= 3 and
+                "COOPERATIVE" in str(s.get("social", {}).get("inferred_intent", ""))
+            ),
+            "sources": ["temporal","bridge"],
+            "strength": 0.75,
+            "description": "High threat signal with cooperative intent — contradictory"
+        },
+        {
+            "id":   "CR_002",
+            "name": "block_trust_conflict",
+            "type": ConflictType.RESPONSE_CONFLICT,
+            "check": lambda s: (
+                "BLOCK" in str(s.get("decision", "")) and
+                s.get("social_context", {}).get("trust_score", 0) > 0.7
+            ),
+            "sources": ["prefrontal","bridge"],
+            "strength": 0.65,
+            "description": "Decision to block a high-trust entity"
+        },
+        {
+            "id":   "CR_003",
+            "name": "crisis_no_fear_conflict",
+            "type": ConflictType.PREDICTION_CONFLICT,
+            "check": lambda s: (
+                s.get("consciousness_state", "") == "CRISIS" and
+                s.get("fear_score", 1.0) < 0.2
+            ),
+            "sources": ["thalamus","amygdala"],
+            "strength": 0.60,
+            "description": "Thalamus in CRISIS but amygdala reports low fear"
+        },
+        {
+            "id":   "CR_004",
+            "name": "standby_high_threat",
+            "type": ConflictType.RESPONSE_CONFLICT,
+            "check": lambda s: (
+                "STANDBY" in str(s.get("decision", "")) and
+                s.get("threat", 0) >= 3
+            ),
+            "sources": ["prefrontal","temporal"],
+            "strength": 0.80,
+            "description": "Standby decision under high threat — under-response"
+        },
+        {
+            "id":   "CR_005",
+            "name": "fear_approach_conflict",
+            "type": ConflictType.EMOTIONAL_CONFLICT,
+            "check": lambda s: (
+                s.get("emotion", "") in ["fear","terror"] and
+                "APPROACH" in str(s.get("affordances", []))
+            ),
+            "sources": ["amygdala","visual"],
+            "strength": 0.55,
+            "description": "Fear emotion while visual suggests approach affordance"
+        },
+        {
+            "id":   "CR_006",
+            "name": "novelty_habit_conflict",
+            "type": ConflictType.RESPONSE_CONFLICT,
+            "check": lambda s: (
+                s.get("novelty", 0) > 0.85 and
+                s.get("habit_stage", "") in ["EXPERT","HABITUAL"]
+            ),
+            "sources": ["hippocampus","basal_ganglia"],
+            "strength": 0.45,
+            "description": "Novel situation being handled by ingrained habit"
+        },
+        {
+            "id":   "CR_007",
+            "name": "hijack_deliberate_conflict",
+            "type": ConflictType.RESPONSE_CONFLICT,
+            "check": lambda s: (
+                s.get("hijack", False) and
+                s.get("tier", "") == "DELIBERATE"
+            ),
+            "sources": ["amygdala","sensorimotor"],
+            "strength": 0.90,
+            "description": "Amygdala hijack active but deliberate response selected"
+        },
+        {
+            "id":   "CR_008",
+            "name": "burnout_high_demand",
+            "type": ConflictType.GOAL_CONFLICT,
+            "check": lambda s: (
+                s.get("neuro_state", "") == "BURNOUT" and
+                s.get("threat", 0) >= 2
+            ),
+            "sources": ["neuromodulator","prefrontal"],
+            "strength": 0.70,
+            "description": "System in BURNOUT state but high demand continues"
+        },
+    ]
 
-        if len(module_outputs) < 2:
-            return 0.0, "insufficient modules", []
+    def detect(self, signal: dict, cycle: int) -> Optional[ConflictSignal]:
+        """Check all conflict rules. Return highest-strength conflict."""
+        detected = []
 
-        # ── VALENCE CONFLICT ─────────────────────────────
-        valences = {
-            k: v.get("valence", 0.0)
-            for k, v in module_outputs.items()
-            if "valence" in v
-        }
-        if len(valences) >= 2:
-            vals = list(valences.values())
-            valence_spread = max(vals) - min(vals)
-            if valence_spread > 0.3:
-                conflict_score = max(conflict_score, valence_spread * 0.8)
-                conflicting_modules = [
-                    k for k, v in valences.items()
-                    if v == max(vals) or v == min(vals)
-                ]
-                conflicts_found.extend(conflicting_modules)
-                description_parts.append(
-                    f"valence spread={valence_spread:.2f} "
-                    f"({'+'.join(conflicting_modules[:2])})"
-                )
+        for rule in self.CONFLICT_RULES:
+            try:
+                if rule["check"](signal):
+                    detected.append(rule)
+            except Exception:
+                continue
 
-        # ── CONFIDENCE SPREAD ────────────────────────────
-        confidences = {
-            k: v.get("confidence", 0.5)
-            for k, v in module_outputs.items()
-            if "confidence" in v
-        }
-        if len(confidences) >= 2:
-            c_vals = list(confidences.values())
-            conf_spread = max(c_vals) - min(c_vals)
-            if conf_spread > 0.5:
-                conflict_score = max(conflict_score, conf_spread * 0.5)
-                low_conf = [k for k, v in confidences.items() if v == min(c_vals)]
-                conflicts_found.extend(low_conf)
-                description_parts.append(f"confidence spread={conf_spread:.2f}")
+        if not detected:
+            return None
 
-        # ── PRIORITY CONFLICT ────────────────────────────
-        priorities = {
-            k: v.get("priority", 0)
-            for k, v in module_outputs.items()
-            if "priority" in v
-        }
-        high_priority = [k for k, v in priorities.items() if v >= 3]
-        if len(high_priority) >= 3:
-            conflict_score = max(conflict_score, min(1.0, len(high_priority) * 0.15))
-            conflicts_found.extend(high_priority[:3])
-            description_parts.append(f"{len(high_priority)} modules claiming high priority")
+        # Pick highest strength conflict
+        winner = max(detected, key=lambda r: r["strength"])
 
-        # ── THREAT VS SAFETY CONFLICT ────────────────────
-        threat_score  = module_outputs.get("amygdala", {}).get("fear_score", 0.0)
-        safety_score  = module_outputs.get("amygdala", {}).get("safety_score", 0.0)
-        prefrontal_ok = module_outputs.get("prefrontal", {}).get("valence", 0.5)
+        conflict = ConflictSignal(
+            conflict_type = winner["type"].value,
+            sources       = winner["sources"],
+            signals       = {
+                "rule":        winner["name"],
+                "description": winner["description"],
+                "threat":      signal.get("threat", 0),
+                "decision":    str(signal.get("decision",""))[:30],
+                "emotion":     signal.get("emotion",""),
+                "intent":      str(signal.get("social",{}) or {})[:30]
+            },
+            strength      = winner["strength"],
+            cycle         = cycle
+        )
+        return conflict
 
-        if threat_score > 0.5 and prefrontal_ok > 0.6:
-            clash = (threat_score + prefrontal_ok - 1.0)
-            conflict_score = max(conflict_score, min(1.0, clash * 1.2))
-            conflicts_found.extend(["amygdala", "prefrontal"])
-            description_parts.append(
-                f"amygdala fear={threat_score:.2f} vs prefrontal safe={prefrontal_ok:.2f}"
-            )
-
-        description = " | ".join(description_parts) if description_parts else "none"
-        return round(conflict_score, 4), description, list(set(conflicts_found))
-
-    def score_to_level(self, score: float) -> ConflictLevel:
-        if score >= CONFLICT_CRITICAL: return ConflictLevel.CRITICAL
-        if score >= CONFLICT_HIGH:     return ConflictLevel.HIGH
-        if score >= CONFLICT_MODERATE: return ConflictLevel.MODERATE
-        if score >= CONFLICT_LOW:      return ConflictLevel.LOW
-        return ConflictLevel.NONE
+    def all_conflicts(self, signal: dict, cycle: int) -> list[ConflictSignal]:
+        """Return ALL detected conflicts (not just strongest)."""
+        conflicts = []
+        for rule in self.CONFLICT_RULES:
+            try:
+                if rule["check"](signal):
+                    conflicts.append(ConflictSignal(
+                        conflict_type = rule["type"].value,
+                        sources       = rule["sources"],
+                        signals       = {"rule": rule["name"],
+                                        "description": rule["description"]},
+                        strength      = rule["strength"],
+                        cycle         = cycle
+                    ))
+            except Exception:
+                continue
+        return sorted(conflicts, key=lambda c: c.strength, reverse=True)
 
 
 # ─── Error Monitor ────────────────────────────────────────────────────────────
 
 class ErrorMonitor:
     """
-    Tracks prediction errors — when the system expected X and got Y.
+    Monitors for meaningful errors — not timing errors (cerebellum)
+    but SEMANTIC errors: doing the wrong thing, expecting wrong outcome.
 
-    The brain's ACC generates a distinctive EEG signal ~100ms after
-    an error: the Error-Related Negativity (ERN). It's involuntary,
-    automatic, and present even when the person doesn't consciously
-    notice the mistake.
+    Generates Error-Related Negativity (ERN) — the neural signal
+    that fires within 100ms of an error, before conscious awareness.
 
-    This module models that mechanism:
-    - Store predictions before action
-    - Compare with actual outcomes after action
-    - Generate ERN signal proportional to mismatch
-    - Feed ERN to metacognition for self-correction
+    Also generates Post-Error Positivity (Pe) — the later signal
+    that reflects conscious error recognition and adjustment.
     """
 
-    def __init__(self, db: ACCDB):
-        self.db         = db
-        self.pending:   dict[str, str] = {}    # prediction_id → expected outcome
-        self.ern_signal: float         = 0.0   # current ERN level (decays)
-        self.total_errors = 0
-        self.total_corrections = 0
+    def __init__(self):
+        self.error_history: deque = deque(maxlen=50)
+        self.post_error_slowing = 0.0  # post-error caution level
 
-    def register_prediction(self, prediction_id: str, expected: str):
-        """Store a prediction before the outcome is known."""
-        self.pending[prediction_id] = expected
+    def monitor(self, signal: dict,
+                expected_decision: str,
+                actual_decision: str,
+                cycle: int) -> Optional[ErrorSignal]:
+        """Detect semantic errors in module outputs."""
 
-    def evaluate(self, prediction_id: str, actual: str,
-                 source_module: str) -> Optional[ErrorSignal]:
-        """
-        Compare prediction with actual outcome.
-        Returns ErrorSignal if mismatch detected.
-        """
-        expected = self.pending.pop(prediction_id, None)
-        if expected is None:
+        if not expected_decision or not actual_decision:
             return None
 
-        # Measure mismatch
-        if expected == actual:
-            return None  # correct prediction — no ERN
-
-        # Mismatch detected
-        mismatch_severity = self._severity(expected, actual)
-        self.ern_signal = min(1.0, self.ern_signal + ERROR_SPIKE * mismatch_severity)
-        self.total_errors += 1
-
-        err = ErrorSignal(
-            error_type    = ErrorType.OUTCOME_MISMATCH.value,
-            predicted     = expected,
-            actual        = actual,
-            ern_magnitude = round(self.ern_signal, 4),
-            source_module = source_module
-        )
-        self.db.save_error(err)
-        return err
-
-    def flag_confidence_crash(self, module: str,
-                               conf_before: float, conf_after: float) -> Optional[ErrorSignal]:
-        """Flag when a module's confidence suddenly drops."""
-        if conf_before - conf_after < 0.40:
+        # Check for obvious errors
+        error_type = self._classify_error(signal, expected_decision, actual_decision)
+        if error_type == ErrorType.NONE:
+            # Post-error positivity — system stabilizing
+            self.post_error_slowing = max(0.0, self.post_error_slowing - 0.05)
             return None
 
-        self.ern_signal = min(1.0, self.ern_signal + ERROR_SPIKE * 0.5)
-        self.total_errors += 1
+        # Compute ERN amplitude — how surprising is this error?
+        ern = self._compute_ern(signal, expected_decision, actual_decision)
+
+        # Post-error adjustment — slow down after errors
+        self.post_error_slowing = min(1.0, self.post_error_slowing + 0.2)
 
         err = ErrorSignal(
-            error_type    = ErrorType.CONFIDENCE_CRASH.value,
-            predicted     = f"conf≈{conf_before:.2f}",
-            actual        = f"conf={conf_after:.2f}",
-            ern_magnitude = round(self.ern_signal, 4),
-            source_module = module
+            error_type    = error_type.value,
+            module        = signal.get("source_module","unknown"),
+            expected      = expected_decision[:40],
+            actual        = actual_decision[:40],
+            ern_amplitude = ern,
+            pe_amplitude  = round(ern * 0.6, 4),  # Pe is smaller
+            cycle         = cycle
         )
-        self.db.save_error(err)
+        self.error_history.append(err)
         return err
 
-    def decay(self):
-        """ERN signal decays over time (called each cycle)."""
-        self.ern_signal = round(max(0.0, self.ern_signal - ERROR_DECAY), 4)
+    def _classify_error(self, signal: dict,
+                         expected: str, actual: str) -> ErrorType:
+        """Classify the type of error."""
+        threat = signal.get("threat", 0)
 
-    def _severity(self, expected: str, actual: str) -> float:
-        """Estimate how severe the mismatch is."""
-        opposites = {
-            ("SAFE","ALARM"),("ALARM","SAFE"),
-            ("POSITIVE","NEGATIVE"),("NEGATIVE","POSITIVE"),
-            ("LOW","HIGH"),("HIGH","LOW"),
-            ("ACCEPT","REJECT"),("REJECT","ACCEPT"),
-        }
-        pair = (expected.upper(), actual.upper())
-        if pair in opposites or tuple(reversed(pair)) in opposites:
-            return 1.0   # complete reversal
-        if expected.upper() == actual.upper():
-            return 0.0
-        return 0.5       # partial mismatch
+        # Commission error — did wrong thing
+        if threat >= 3 and "STANDBY" in actual and "BLOCK" in expected:
+            return ErrorType.COMMISSION
+        if threat == 0 and "ESCALATE" in actual and "MONITOR" in expected:
+            return ErrorType.COMMISSION
+
+        # Omission error — failed to act
+        if threat >= 4 and actual in ["STANDBY","MONITOR","NONE"]:
+            return ErrorType.OMISSION
+
+        # Magnitude error — right direction, wrong strength
+        if threat == 1 and "EMERGENCY" in actual:
+            return ErrorType.MAGNITUDE
+        if threat == 3 and "MONITOR" in actual:
+            return ErrorType.MAGNITUDE
+
+        return ErrorType.NONE
+
+    def _compute_ern(self, signal: dict,
+                      expected: str, actual: str) -> float:
+        """Compute ERN amplitude — surprise × importance."""
+        threat = signal.get("threat", 0)
+
+        # Base ERN from mismatch severity
+        if expected and actual and expected != actual:
+            # Rough semantic distance
+            base_ern = 0.4 + threat * 0.1
+        else:
+            base_ern = 0.2
+
+        # Amplify if high threat
+        if threat >= 3:
+            base_ern = min(1.0, base_ern * 1.5)
+
+        # Amplify if history of errors
+        recent_errors = len([e for e in self.error_history
+                             if e.ern_amplitude > ERN_THRESHOLD])
+        if recent_errors > 3:
+            base_ern = min(1.0, base_ern * 1.2)
+
+        return round(base_ern, 4)
+
+    def post_error_rate(self) -> float:
+        """How much to slow down after errors."""
+        return round(self.post_error_slowing, 3)
+
+    def recent_error_rate(self, window: int = 10) -> float:
+        """Error rate over recent cycles."""
+        if not self.error_history: return 0.0
+        recent = list(self.error_history)[-window:]
+        errors = sum(1 for e in recent if e.ern_amplitude > ERN_THRESHOLD)
+        return round(errors / window, 3)
 
 
-# ─── Performance Tracker ─────────────────────────────────────────────────────
+# ─── Performance Tracker ──────────────────────────────────────────────────────
 
 class PerformanceTracker:
     """
-    Monitors rolling system health.
-
-    The ACC maintains a constant background estimate of:
-    "Is the system performing well overall?"
-
-    When rolling performance drops, ACC escalates arousal
-    (via NE projections) to force the rest of the brain
-    to work harder / more carefully.
-
-    This is why difficult tasks feel effortful —
-    the ACC is continuously signaling "not good enough yet."
+    Tracks performance over time.
+    When errors cluster → ACC increases control.
+    When smooth → control relaxes.
     """
 
-    def __init__(self, db: ACCDB, window=PERF_WINDOW):
-        self.db      = db
-        self.window  = window
-        self.history: deque = deque(maxlen=window)
-        self.cycle   = 0
+    def __init__(self):
+        self.outcomes:  deque = deque(maxlen=PERFORMANCE_WINDOW)
+        self.conflicts: deque = deque(maxlen=PERFORMANCE_WINDOW)
+        self.errors:    deque = deque(maxlen=PERFORMANCE_WINDOW)
+        self.cycle      = 0
 
-    def record(self, confidence: float, conflict_score: float,
-               error_rate: float, module_count: int) -> PerformanceSample:
+    def record(self, success: bool, had_conflict: bool, had_error: bool):
         self.cycle += 1
+        self.outcomes.append(int(success))
+        self.conflicts.append(int(had_conflict))
+        self.errors.append(int(had_error))
 
-        health = self._compute_health(confidence, conflict_score, error_rate)
-        sample = PerformanceSample(
-            cycle          = self.cycle,
-            confidence     = round(confidence, 4),
-            conflict_score = round(conflict_score, 4),
-            error_rate     = round(error_rate, 4),
-            module_count   = module_count,
-            health_score   = round(health, 4)
+    def success_rate(self) -> float:
+        if not self.outcomes: return 1.0
+        return round(sum(self.outcomes) / len(self.outcomes), 3)
+
+    def conflict_rate(self) -> float:
+        if not self.conflicts: return 0.0
+        return round(sum(self.conflicts) / len(self.conflicts), 3)
+
+    def error_rate(self) -> float:
+        if not self.errors: return 0.0
+        return round(sum(self.errors) / len(self.errors), 3)
+
+    def performance_state(self) -> PerformanceState:
+        sr = self.success_rate()
+        if sr > 0.90: return PerformanceState.EXCELLENT
+        if sr > 0.75: return PerformanceState.GOOD
+        if sr > 0.55: return PerformanceState.MODERATE
+        if sr > 0.35: return PerformanceState.POOR
+        return PerformanceState.FAILING
+
+    def metrics(self) -> PerformanceMetrics:
+        state = self.performance_state()
+        return PerformanceMetrics(
+            cycle        = self.cycle,
+            success_rate = self.success_rate(),
+            conflict_rate= self.conflict_rate(),
+            error_rate   = self.error_rate(),
+            state        = state.value
         )
-        self.history.append(sample)
-        self.db.save_performance(sample)
-        return sample
-
-    def _compute_health(self, confidence: float,
-                         conflict: float, error_rate: float) -> float:
-        """
-        Health = weighted combination of:
-         - confidence (positive)
-         - conflict (negative)
-         - error rate (negative)
-        """
-        health = (
-            confidence * 0.50
-            - conflict * 0.30
-            - error_rate * 0.20
-        )
-        return max(0.0, min(1.0, health))
-
-    def rolling_health(self) -> float:
-        if not self.history: return 0.5
-        return round(sum(s.health_score for s in self.history) / len(self.history), 4)
-
-    def trend(self) -> str:
-        """Is system health improving, stable, or declining?"""
-        if len(self.history) < 4: return "UNKNOWN"
-        recent = [s.health_score for s in list(self.history)[-4:]]
-        delta  = recent[-1] - recent[0]
-        if delta > 0.08:  return "IMPROVING"
-        if delta < -0.08: return "DECLINING"
-        return "STABLE"
-
-    def alarm_active(self) -> bool:
-        return self.rolling_health() < PERF_ALARM_THRESH
 
 
-# ─── Salience Gate ────────────────────────────────────────────────────────────
+# ─── Cognitive Controller ─────────────────────────────────────────────────────
 
-class SalienceGate:
+class CognitiveController:
     """
-    The ACC processes social pain identically to physical pain.
-    Social exclusion, rejection, betrayal — all activate
-    the dorsal ACC (dACC) the same way a burn does.
+    Allocates cognitive control based on conflict and error signals.
+    The ACC's executive function — determines how much
+    prefrontal engagement is needed.
 
-    This gate amplifies conflict scores when social threat
-    signals are present, even when explicit threat levels are low.
+    High conflict   → boost control (slow down, be more careful)
+    Error detected  → boost control (post-error adjustment)
+    Smooth running  → reduce control (save resources)
 
-    Why this matters in FORGE:
-    Social signals that "feel wrong" — a sudden change in
-    communication style, unexpected silence, anomalous trust
-    changes — deserve elevated conflict flags even when
-    numerical threat scores remain low.
+    Control level directly maps to:
+    - Prefrontal deliberation depth
+    - Thalamus gate sensitivity
+    - Sensorimotor reflex threshold
+    - Basal ganglia competition threshold
     """
 
-    SOCIAL_PAIN_CUES = [
-        "exclusion", "rejection", "betrayal", "silence",
-        "withdrawal", "dismissal", "isolation", "ignored"
-    ]
+    def __init__(self, db: ACCDB):
+        self.db    = db
+        self.level = 0.30   # baseline control
+        self.cycle = 0
 
-    def amplify(self, signal: dict, base_conflict: float) -> tuple[float, str]:
-        """
-        Returns (amplified_conflict, reason).
-        Boosts conflict if social pain cues detected.
-        """
-        social = signal.get("social", {}) or {}
-        reason = ""
+    def update(self, conflict: Optional[ConflictSignal],
+               error: Optional[ErrorSignal],
+               performance: PerformanceMetrics,
+               cycle: int) -> float:
+        old   = self.level
+        self.cycle = cycle
 
-        # Trust collapse
-        trust   = social.get("trust_score", 1.0)
-        if trust < 0.2:
-            boost  = SOCIAL_PAIN_BOOST * (1.0 - trust)
-            base_conflict = min(1.0, base_conflict + boost)
-            reason = f"trust_collapse={trust:.2f}"
+        # Conflict boosts control
+        if conflict:
+            boost = CONTROL_BOOST_RATE * conflict.strength
+            self.level = min(1.0, self.level + boost)
 
-        # Intent check for social pain cues
-        intent = social.get("inferred_intent", "").lower()
-        for cue in self.SOCIAL_PAIN_CUES:
-            if cue in intent:
-                base_conflict = min(1.0, base_conflict + SOCIAL_PAIN_BOOST * 0.5)
-                reason = f"social_pain_cue={cue}"
-                break
+        # Error boosts control
+        if error:
+            boost = CONTROL_BOOST_RATE * error.ern_amplitude
+            self.level = min(1.0, self.level + boost)
 
-        # Sudden communication change (anomaly + social)
-        if signal.get("anomaly", False) and social:
-            base_conflict = min(1.0, base_conflict + 0.10)
-            reason += " + anomaly"
+        # Poor performance boosts control
+        if performance.state in [PerformanceState.POOR.value,
+                                  PerformanceState.FAILING.value]:
+            self.level = min(1.0, self.level + 0.05)
 
-        return round(base_conflict, 4), reason.strip()
+        # Excellent performance relaxes control
+        elif performance.state == PerformanceState.EXCELLENT.value:
+            self.level = max(0.10, self.level - CONTROL_DECAY_RATE)
+
+        self.level = round(self.level, 4)
+
+        if abs(self.level - old) > 0.02:
+            self.db.log_control_change(
+                trigger = conflict.conflict_type if conflict else
+                          error.error_type if error else "performance",
+                before  = old,
+                after   = self.level,
+                reason  = (conflict.signals.get("description","") if conflict else
+                           f"ERN={error.ern_amplitude:.2f}" if error else
+                           performance.state),
+                cycle   = cycle
+            )
+
+        return self.level
+
+    def label(self) -> str:
+        if self.level < 0.25: return ControlLevel.MINIMAL.value
+        if self.level < 0.50: return ControlLevel.LOW.value
+        if self.level < 0.70: return ControlLevel.MODERATE.value
+        if self.level < 0.85: return ControlLevel.HIGH.value
+        return ControlLevel.MAXIMUM.value
+
+    def attention_boost(self) -> float:
+        """Boost to prefrontal attention allocation."""
+        return round(max(0.0, self.level - 0.3) * 0.5, 4)
 
 
-# ─── Resolution Engine ────────────────────────────────────────────────────────
+# ─── Emotion Regulator ────────────────────────────────────────────────────────
 
-class ResolutionEngine:
+class EmotionRegulator:
     """
-    Given a conflict, the ACC suggests how to resolve it.
+    Mediates conflict between limbic (emotional) and prefrontal (rational).
+    The ACC sits between these two and can:
+      - Dampen emotional responses when cognition is needed
+      - Allow emotion through when cognition is overwhelmed
+      - Flag when emotion and cognition directly contradict
 
-    The ACC doesn't resolve conflicts itself — it routes them
-    to the appropriate downstream system. This is its primary
-    output function.
-
-    Resolution choice depends on:
-      - Conflict level (how bad)
-      - Time pressure (how urgent)
-      - Which modules are in conflict (emotion vs reason)
-      - System health (can we afford to pause?)
-    """
-
-    def suggest(self, conflict: ConflictEvent,
-                error_signal: Optional[ErrorSignal],
-                health: float,
-                hijack_active: bool) -> ResolutionStrategy:
-        """Select the best resolution strategy."""
-
-        level = ConflictLevel(conflict.level)
-
-        # Hijack active — everything defers to amygdala
-        if hijack_active:
-            return ResolutionStrategy.DEFER_TO_AMYGDALA
-
-        # Critical conflict — inhibit action entirely
-        if level == ConflictLevel.CRITICAL:
-            return ResolutionStrategy.INHIBIT_ACTION
-
-        # ERN spike — surface to metacognition
-        if error_signal and error_signal.ern_magnitude > 0.7:
-            return ResolutionStrategy.NOTIFY_METACOGNITION
-
-        # System health poor — boost arousal
-        if health < PERF_ALARM_THRESH:
-            return ResolutionStrategy.ESCALATE_AROUSAL
-
-        # Amygdala vs prefrontal conflict — defer to reason unless urgent
-        modules = conflict.modules
-        if "amygdala" in modules and "prefrontal" in modules:
-            if conflict.conflict_score < CONFLICT_HIGH:
-                return ResolutionStrategy.DEFER_TO_PREFRONTAL
-            else:
-                return ResolutionStrategy.PAUSE_AND_GATHER
-
-        # High conflict, enough health — gather more signal
-        if level in [ConflictLevel.HIGH, ConflictLevel.MODERATE]:
-            return ResolutionStrategy.PAUSE_AND_GATHER
-
-        # Low conflict — just notify metacognition quietly
-        return ResolutionStrategy.NOTIFY_METACOGNITION
-
-    def urgency(self, level: ConflictLevel, health: float) -> float:
-        """
-        Compute ACC urgency signal (0-1).
-        Urgency drives NE release in neuromodulator.
-        """
-        base = {
-            ConflictLevel.NONE:     0.0,
-            ConflictLevel.LOW:      0.15,
-            ConflictLevel.MODERATE: 0.40,
-            ConflictLevel.HIGH:     0.70,
-            ConflictLevel.CRITICAL: 1.0,
-        }.get(level, 0.0)
-
-        # Low health amplifies urgency
-        health_factor = 1.0 + (1.0 - health) * 0.3
-        return round(min(1.0, base * health_factor), 4)
-
-
-# ─── ACC Output ──────────────────────────────────────────────────────────────
-
-class ACCOutput:
-    """
-    Translates ACC activation into downstream module signals.
-
-    ACC projects to:
-      - forge_metacognition  → surface conflict to awareness
-      - forge_prefrontal     → request deliberate reasoning
-      - forge_neuromodulator → modulate NE / arousal
-      - forge_thalamus       → adjust attention gating
-      - forge_conscious      → interrupt current processing
+    This is the neural basis of emotion regulation.
     """
 
-    def compute(self, conflict: ConflictEvent,
-                error: Optional[ErrorSignal],
-                health: float,
-                strategy: ResolutionStrategy,
-                urgency: float) -> dict:
+    def __init__(self):
+        self.regulation_history: deque = deque(maxlen=50)
+        self.suppression_level = 0.0
 
-        # NE signal to neuromodulator
-        ne_signal = round(urgency * 0.6, 4)
+    def regulate(self, signal: dict) -> dict:
+        """
+        Compute emotion regulation signal.
+        Returns how much to dampen/amplify emotional response.
+        """
+        emotion      = signal.get("emotion","neutral")
+        mood_valence = signal.get("mood_valence", 0.0)
+        threat       = signal.get("threat", 0)
+        decision     = str(signal.get("decision",""))
 
-        # Attention redirect signal to thalamus
-        attn_redirect = round(urgency * 0.5, 4) if conflict.level != ConflictLevel.NONE.value else 0.0
+        # Cases where cognition should override emotion
+        cognitive_override = 0.0
+        if threat >= 3 and emotion in ["disgust","sadness"]:
+            cognitive_override = 0.4  # suppress non-survival emotions in crisis
+        if "COLLABORATE" in decision and emotion == "fear" and threat == 0:
+            cognitive_override = 0.3  # suppress fear during safe collaboration
 
-        # Interrupt signal to conscious
-        interrupt = conflict.level in [ConflictLevel.HIGH.value, ConflictLevel.CRITICAL.value]
+        # Cases where emotion should override cognition
+        emotional_override = 0.0
+        if emotion in ["terror","panic"] and threat >= 4:
+            emotional_override = 0.5  # let fear through in real crisis
+        if mood_valence < -0.6 and threat == 0:
+            emotional_override = 0.2  # persistent distress deserves attention
 
-        # ERN magnitude for metacognition
-        ern = error.ern_magnitude if error else 0.0
-
-        # Prefrontal request flag
-        needs_reasoning = strategy in [
-            ResolutionStrategy.DEFER_TO_PREFRONTAL,
-            ResolutionStrategy.PAUSE_AND_GATHER
-        ]
+        self.suppression_level = round(cognitive_override - emotional_override, 4)
+        self.regulation_history.append(self.suppression_level)
 
         return {
-            "ne_signal":          ne_signal,
-            "attention_redirect": attn_redirect,
-            "interrupt_conscious":interrupt,
-            "ern_magnitude":      round(ern, 4),
-            "needs_reasoning":    needs_reasoning,
-            "strategy":           strategy.value,
-            "urgency":            urgency,
-            "health_index":       round(health, 4),
-            "action_suppressed":  strategy == ResolutionStrategy.INHIBIT_ACTION,
+            "cognitive_override":  cognitive_override,
+            "emotional_override":  emotional_override,
+            "net_suppression":     self.suppression_level,
+            "emotion_allowed":     emotional_override > cognitive_override,
+            "regulation_active":   abs(self.suppression_level) > 0.1
         }
+
+
+# ─── Motivation Engine ────────────────────────────────────────────────────────
+
+class MotivationEngine:
+    """
+    Monitors effort vs reward tradeoff.
+    When cognitive cost is high and reward is low,
+    motivation drops → system reduces engagement.
+
+    This is the neural basis of mental fatigue and giving up.
+    The ACC continuously evaluates: is this worth it?
+    """
+
+    def __init__(self):
+        self.motivation    = 0.80
+        self.effort_cost   = 0.0
+        self.reward_history:deque = deque(maxlen=30)
+        self.effort_history:deque = deque(maxlen=30)
+
+    def update(self, conflict_strength: float,
+               success: bool, threat: int) -> dict:
+        # Effort accumulates with conflicts
+        self.effort_cost = min(1.0,
+            self.effort_cost + EFFORT_COST_RATE * conflict_strength
+        )
+
+        # Reward from success
+        reward = 0.6 + threat * 0.1 if success else 0.2
+        self.reward_history.append(reward)
+        self.effort_history.append(self.effort_cost)
+
+        # Natural recovery when quiet
+        if conflict_strength < 0.1:
+            self.effort_cost = max(0.0, self.effort_cost - RECOVERY_RATE)
+
+        # Motivation = reward - effort (simplified)
+        avg_reward = sum(self.reward_history)/len(self.reward_history)
+        self.motivation = round(
+            max(0.1, min(1.0, avg_reward - self.effort_cost * 0.5)), 4
+        )
+
+        return {
+            "motivation":   self.motivation,
+            "effort_cost":  round(self.effort_cost, 4),
+            "avg_reward":   round(avg_reward, 4),
+            "label":        self._label()
+        }
+
+    def _label(self) -> str:
+        if self.motivation > 0.75: return "ENGAGED"
+        if self.motivation > 0.55: return "MODERATE"
+        if self.motivation > 0.35: return "FATIGUED"
+        return "EXHAUSTED"
+
+
+# ─── Pain Analog ─────────────────────────────────────────────────────────────
+
+class PainAnalog:
+    """
+    Models the cognitive component of pain.
+    Sustained conflict is cognitively painful.
+    The ACC generates an aversive signal proportional to
+    unresolved conflict duration.
+
+    This is not physical pain — it is the discomfort of:
+    - Sustained cognitive dissonance
+    - Unresolved decision conflicts
+    - Persistent error states
+    - Chronic high cognitive load
+
+    High cognitive pain → system seeks to resolve or escape.
+    """
+
+    def __init__(self):
+        self.pain_level   = 0.0
+        self.pain_history: deque = deque(maxlen=50)
+        self.unresolved_cycles = 0
+
+    def update(self, conflict: Optional[ConflictSignal],
+               resolved: bool) -> float:
+        if conflict and not resolved:
+            self.unresolved_cycles += 1
+            self.pain_level = min(1.0,
+                self.pain_level + conflict.strength * 0.1
+            )
+        else:
+            self.unresolved_cycles = 0
+            self.pain_level = max(0.0, self.pain_level - 0.08)
+
+        self.pain_level = round(self.pain_level, 4)
+        self.pain_history.append(self.pain_level)
+        return self.pain_level
+
+    def pain_label(self) -> str:
+        if self.pain_level < 0.1:  return "NONE"
+        if self.pain_level < 0.3:  return "MILD"
+        if self.pain_level < 0.6:  return "MODERATE"
+        if self.pain_level < 0.8:  return "SEVERE"
+        return "UNBEARABLE"
 
 
 # ─── FORGE Anterior Cingulate ─────────────────────────────────────────────────
 
 class ForgeAnteriorCingulate:
     def __init__(self):
-        self.db          = ACCDB()
-        self.detector    = ConflictDetector()
-        self.error_mon   = ErrorMonitor(self.db)
-        self.perf        = PerformanceTracker(self.db)
-        self.salience    = SalienceGate()
-        self.resolver    = ResolutionEngine()
-        self.output_calc = ACCOutput()
-        self.cycle       = 0
-
-        # Open conflicts (not yet resolved)
-        self.open_conflicts: list[ConflictEvent] = []
-
-        # Running counters
-        self.total_conflicts  = 0
-        self.total_errors     = 0
-        self.total_inhibitions= 0
-        self.total_escalations= 0
+        self.db           = ACCDB()
+        self.detector     = ConflictDetector()
+        self.error_monitor= ErrorMonitor()
+        self.performance  = PerformanceTracker()
+        self.controller   = CognitiveController(self.db)
+        self.emotion_reg  = EmotionRegulator()
+        self.motivation   = MotivationEngine()
+        self.pain         = PainAnalog()
+        self.cycle        = 0
+        self.total_conflicts   = 0
+        self.total_errors      = 0
+        self.total_resolutions = 0
 
     def process(self, signal: dict,
-                module_outputs: Optional[dict] = None,
-                hijack_active: bool = False) -> dict:
+                expected_decision: str = "",
+                success: bool = True) -> dict:
         """
-        Full ACC processing pipeline.
-
-        signal:         raw input signal (same format as other FORGE modules)
-        module_outputs: dict of {module_name: {valence, confidence, priority, ...}}
-        hijack_active:  whether forge_amygdala has triggered hijack
-
-        Returns full ACC activation result.
+        Full ACC processing.
+        Returns conflict detection, error monitoring,
+        control level, and all downstream effects.
         """
-        t0         = time.time()
         self.cycle += 1
-        module_outputs = module_outputs or {}
+        threat = signal.get("threat", 0)
 
-        # 1. Decay ERN signal each cycle
-        self.error_mon.decay()
-
-        # 2. Detect conflicts between modules
-        conflict_score, description, conflicting_modules = self.detector.detect(
-            module_outputs
-        )
-
-        # 3. Amplify via social pain / salience gating
-        conflict_score, salience_reason = self.salience.amplify(signal, conflict_score)
-        if salience_reason:
-            description = f"{description} | salience: {salience_reason}".strip(" |")
-
-        # 4. Classify conflict level
-        level = self.detector.score_to_level(conflict_score)
-
-        # 5. Build conflict event
-        conflict = ConflictEvent(
-            modules        = conflicting_modules,
-            conflict_score = conflict_score,
-            level          = level.value,
-            description    = description,
-        )
-
-        if level != ConflictLevel.NONE:
+        # 1. Detect conflicts
+        conflict = self.detector.detect(signal, self.cycle)
+        all_conflicts = self.detector.all_conflicts(signal, self.cycle)
+        if conflict:
             self.total_conflicts += 1
             self.db.save_conflict(conflict)
-            self.open_conflicts.append(conflict)
 
-        # 6. Age open conflicts
-        still_open = []
-        for oc in self.open_conflicts[-10:]:
-            oc.cycles_open += 1
-            if oc.cycles_open > 5:
-                oc.resolved = True
-                self.db.save_conflict(oc)
-                self.db.log_resolution(oc.id, oc.resolution, "timeout", oc.cycles_open)
-            else:
-                still_open.append(oc)
-        self.open_conflicts = still_open
+        # 2. Monitor errors
+        actual_decision = str(signal.get("decision",""))
+        error = self.error_monitor.monitor(
+            signal, expected_decision, actual_decision, self.cycle
+        )
+        if error:
+            self.total_errors += 1
+            self.db.save_error(error)
 
-        # 7. Error monitoring — check for expected outcome mismatches
-        error_signal = None
-        expected = signal.get("expected_outcome","")
-        actual   = signal.get("actual_outcome","")
-        if expected and actual and expected != actual:
-            pred_id = str(uuid.uuid4())[:8]
-            self.error_mon.register_prediction(pred_id, expected)
-            error_signal = self.error_mon.evaluate(
-                pred_id, actual,
-                source_module=signal.get("source_module","unknown")
-            )
-            if error_signal:
-                self.total_errors += 1
+        # 3. Track performance
+        self.performance.record(success, bool(conflict), bool(error))
+        perf = self.performance.metrics()
 
-        # 8. Performance tracking
-        confidence  = signal.get("confidence", 0.6)
-        error_rate  = self.error_mon.total_errors / max(self.cycle, 1)
-        sample      = self.perf.record(
-            confidence, conflict_score, error_rate, len(module_outputs)
+        # 4. Update cognitive control
+        control_level = self.controller.update(conflict, error, perf, self.cycle)
+        self.db.save_performance(perf)
+
+        # 5. Emotion regulation
+        emotion_reg = self.emotion_reg.regulate(signal)
+
+        # 6. Motivation update
+        motiv = self.motivation.update(
+            conflict.strength if conflict else 0.0, success, threat
         )
 
-        # 9. Choose resolution strategy
-        strategy = self.resolver.suggest(
-            conflict, error_signal,
-            self.perf.rolling_health(), hijack_active
+        # 7. Cognitive pain
+        resolved = not bool(conflict) or success
+        if resolved and conflict: self.total_resolutions += 1
+        pain_level = self.pain.update(conflict, resolved)
+
+        # 8. Build recommendation
+        recommendation = self._recommend(conflict, error, control_level,
+                                          motiv["motivation"], perf)
+
+        # 9. Build output
+        output = ACCOutput(
+            cycle         = self.cycle,
+            conflict      = conflict,
+            error         = error,
+            control_level = control_level,
+            control_label = self.controller.label(),
+            attention_boost = self.controller.attention_boost(),
+            error_flag    = bool(error),
+            conflict_flag = bool(conflict),
+            performance   = perf.state,
+            effort_cost   = motiv["effort_cost"],
+            motivation    = motiv["motivation"],
+            recommendation= recommendation
         )
-        urgency  = self.resolver.urgency(level, self.perf.rolling_health())
-
-        conflict.resolution = strategy.value
-        self.db.save_conflict(conflict)
-
-        # Track special events
-        if strategy == ResolutionStrategy.INHIBIT_ACTION:
-            self.total_inhibitions += 1
-        if strategy == ResolutionStrategy.ESCALATE_AROUSAL:
-            self.total_escalations += 1
-
-        # 10. Compute output signals
-        output = self.output_calc.compute(
-            conflict, error_signal,
-            self.perf.rolling_health(), strategy, urgency
-        )
-
-        elapsed = (time.time() - t0) * 1000
 
         return {
-            "cycle":                self.cycle,
-            "conflict_score":       conflict_score,
-            "conflict_level":       level.value,
-            "conflicting_modules":  conflicting_modules,
-            "conflict_description": description,
-            "resolution_strategy":  strategy.value,
-            "urgency":              urgency,
-            "ern_signal":           round(self.error_mon.ern_signal, 4),
-            "error_detected":       error_signal is not None,
-            "error_type":           error_signal.error_type if error_signal else "",
-            "rolling_health":       self.perf.rolling_health(),
-            "health_trend":         self.perf.trend(),
-            "performance_alarm":    self.perf.alarm_active(),
-            "open_conflicts":       len(self.open_conflicts),
-            "output":               output,
-            "processing_ms":        round(elapsed, 2),
-            "total_conflicts":      self.total_conflicts,
-            "total_errors":         self.total_errors,
-            "total_inhibitions":    self.total_inhibitions,
+            "cycle":            self.cycle,
+            "conflict": {
+                "detected":     bool(conflict),
+                "type":         conflict.conflict_type if conflict else "NONE",
+                "strength":     conflict.strength if conflict else 0.0,
+                "sources":      conflict.sources if conflict else [],
+                "description":  conflict.signals.get("description","") if conflict else "",
+                "all_count":    len(all_conflicts),
+            },
+            "error": {
+                "detected":     bool(error),
+                "type":         error.error_type if error else "NONE",
+                "ern_amplitude":error.ern_amplitude if error else 0.0,
+                "expected":     error.expected if error else "",
+                "actual":       error.actual if error else "",
+            },
+            "control": {
+                "level":        control_level,
+                "label":        self.controller.label(),
+                "attention_boost": self.controller.attention_boost(),
+            },
+            "performance": {
+                "state":        perf.state,
+                "success_rate": perf.success_rate,
+                "conflict_rate":perf.conflict_rate,
+                "error_rate":   perf.error_rate,
+            },
+            "emotion_regulation": emotion_reg,
+            "motivation":     motiv,
+            "pain": {
+                "level":        pain_level,
+                "label":        self.pain.pain_label(),
+                "unresolved_cycles": self.pain.unresolved_cycles,
+            },
+            "recommendation": recommendation,
+            "post_error_slowing": self.error_monitor.post_error_rate(),
         }
 
-    def register_prediction(self, prediction_id: str, expected: str):
-        """Pre-register a prediction before outcome is known."""
-        self.error_mon.register_prediction(prediction_id, expected)
-
-    def evaluate_prediction(self, prediction_id: str, actual: str,
-                             source: str = "unknown") -> Optional[dict]:
-        """Evaluate a previously registered prediction."""
-        err = self.error_mon.evaluate(prediction_id, actual, source)
-        if err:
-            return {
-                "error_type":    err.error_type,
-                "predicted":     err.predicted,
-                "actual":        err.actual,
-                "ern_magnitude": err.ern_magnitude,
-            }
-        return None
+    def _recommend(self, conflict: Optional[ConflictSignal],
+                   error: Optional[ErrorSignal],
+                   control: float, motivation: float,
+                   perf: PerformanceMetrics) -> str:
+        if conflict and conflict.strength > CONFLICT_SEVERE:
+            return f"RESOLVE_CONFLICT: {conflict.signals.get('description','')[:50]}"
+        if error and error.error_type == ErrorType.OMISSION.value:
+            return "INCREASE_ENGAGEMENT: critical omission detected"
+        if error and error.error_type == ErrorType.COMMISSION.value:
+            return "RECALIBRATE: commission error — wrong action taken"
+        if control > 0.8:
+            return "SLOW_DOWN: maximum cognitive control engaged"
+        if motivation < 0.3:
+            return "REST_REQUIRED: motivation critically low"
+        if perf.state == PerformanceState.FAILING.value:
+            return "SYSTEM_REVIEW: performance below acceptable threshold"
+        if conflict and conflict.strength > CONFLICT_MODERATE:
+            return f"MONITOR_CONFLICT: {conflict.conflict_type}"
+        return "CONTINUE: no significant conflict or error detected"
 
     def get_status(self) -> dict:
         return {
@@ -884,255 +1003,211 @@ class ForgeAnteriorCingulate:
             "cycle":             self.cycle,
             "total_conflicts":   self.total_conflicts,
             "total_errors":      self.total_errors,
-            "total_inhibitions": self.total_inhibitions,
-            "total_escalations": self.total_escalations,
-            "open_conflicts":    len(self.open_conflicts),
-            "rolling_health":    self.perf.rolling_health(),
-            "health_trend":      self.perf.trend(),
-            "performance_alarm": self.perf.alarm_active(),
-            "ern_signal":        round(self.error_mon.ern_signal, 4),
-            "open_conflict_details": [
-                {
-                    "id":          c.id,
-                    "level":       c.level,
-                    "score":       c.conflict_score,
-                    "modules":     c.modules,
-                    "cycles_open": c.cycles_open,
-                    "resolution":  c.resolution,
-                }
-                for c in self.open_conflicts[-5:]
-            ],
+            "total_resolutions": self.total_resolutions,
+            "control_level":     self.controller.level,
+            "control_label":     self.controller.label(),
+            "motivation":        self.motivation.motivation,
+            "effort_cost":       self.motivation.effort_cost,
+            "pain_level":        self.pain.pain_level,
+            "performance":       self.performance.metrics().__dict__,
         }
 
 
 # ─── Rich UI ──────────────────────────────────────────────────────────────────
 
-LEVEL_COLORS = {
-    "NONE":     "dim",
-    "LOW":      "blue",
+CONFLICT_COLORS = {
+    "RESPONSE_CONFLICT":    "bright_red",
+    "INFORMATION_CONFLICT": "red",
+    "EMOTIONAL_CONFLICT":   "magenta",
+    "GOAL_CONFLICT":        "yellow",
+    "PREDICTION_CONFLICT":  "orange3",
+    "NONE":                 "green",
+}
+
+CONTROL_COLORS = {
+    "MINIMAL":  "green",
+    "LOW":      "dim",
     "MODERATE": "yellow",
-    "HIGH":     "red",
-    "CRITICAL": "bright_red",
+    "HIGH":     "orange3",
+    "MAXIMUM":  "bright_red",
 }
 
-STRATEGY_COLORS = {
-    "DEFER_TO_PREFRONTAL":  "cyan",
-    "DEFER_TO_AMYGDALA":    "red",
-    "PAUSE_AND_GATHER":     "yellow",
-    "ESCALATE_AROUSAL":     "orange3",
-    "INHIBIT_ACTION":       "bright_red",
-    "NOTIFY_METACOGNITION": "blue",
+PERF_COLORS = {
+    "EXCELLENT": "bright_green",
+    "GOOD":      "green",
+    "MODERATE":  "yellow",
+    "POOR":      "orange3",
+    "FAILING":   "bright_red",
 }
 
-def render_acc(result: dict, signal: dict, idx: int):
+def render_acc(result: dict, label: str, idx: int):
     if not HAS_RICH: return
 
-    level    = result["conflict_level"]
-    lc       = LEVEL_COLORS.get(level, "white")
-    strategy = result["resolution_strategy"]
-    sc       = STRATEGY_COLORS.get(strategy, "white")
-    health   = result["rolling_health"]
-    hc       = "green" if health > 0.6 else "yellow" if health > 0.4 else "red"
-    urgency  = result["urgency"]
+    conflict  = result["conflict"]
+    error     = result["error"]
+    control   = result["control"]
+    perf      = result["performance"]
+    motiv     = result["motivation"]
+    pain      = result["pain"]
+
+    ct  = conflict["type"]
+    cc  = CONFLICT_COLORS.get(ct, "white")
+    cl  = control["label"]
+    clc = CONTROL_COLORS.get(cl, "white")
+    ps  = perf["state"]
+    pc  = PERF_COLORS.get(ps, "white")
 
     console.print(Rule(
-        f"[bold cyan]⬡ ANTERIOR CINGULATE[/bold cyan]  "
-        f"[dim]#{idx}[/dim]  "
-        f"[{lc}]{level}[/{lc}]  "
-        f"[dim]conflict={result['conflict_score']:.3f}  "
-        f"urgency={urgency:.2f}  "
-        f"health={health:.2f}[/dim]"
+        f"[bold cyan]⬡ ACC[/bold cyan]  [dim]#{idx}[/dim]  "
+        f"[{cc}]{ct}[/{cc}]  "
+        f"control=[{clc}]{cl}[/{clc}]  "
+        f"perf=[{pc}]{ps}[/{pc}]"
     ))
 
-    # Critical banner
-    if level == "CRITICAL":
-        console.print(Panel(
-            f"[bold bright_red]⚡ ACC CRITICAL CONFLICT — ACTION INHIBITED[/bold bright_red]\n"
-            f"Modules: {', '.join(result['conflicting_modules'])}\n"
-            f"[red]{result['conflict_description']}[/red]\n"
-            f"[dim]System paused pending conflict resolution.[/dim]",
-            border_style="bright_red"
-        ))
+    # Left: conflict + error
+    left_lines = []
+    if conflict["detected"]:
+        left_lines += [
+            f"[bold {cc}]⚡ CONFLICT DETECTED[/bold {cc}]",
+            f"[bold]Type:[/bold]    [{cc}]{ct}[/{cc}]",
+            f"[bold]Strength:[/bold] {'█'*int(conflict['strength']*10)}{'░'*(10-int(conflict['strength']*10))} {conflict['strength']:.2f}",
+            f"[bold]Sources:[/bold] {' + '.join(conflict['sources'])}",
+            f"[dim]{conflict['description'][:55]}[/dim]",
+        ]
+        if conflict["all_count"] > 1:
+            left_lines.append(f"[dim]+{conflict['all_count']-1} other conflict(s)[/dim]")
+    else:
+        left_lines.append("[green]✓ No conflict detected[/green]")
 
-    # Performance alarm banner
-    if result["performance_alarm"]:
-        console.print(Panel(
-            f"[bold yellow]⚠  PERFORMANCE ALARM — rolling health={health:.2f}[/bold yellow]\n"
-            f"Trend: {result['health_trend']}  |  Strategy: [{sc}]{strategy}[/{sc}]",
-            border_style="yellow"
-        ))
+    if error["detected"]:
+        ern = error["ern_amplitude"]
+        left_lines += [
+            f"\n[bold red]✗ ERROR: {error['type']}[/bold red]",
+            f"[dim]Expected: {error['expected'][:25]}[/dim]",
+            f"[dim]Actual:   {error['actual'][:25]}[/dim]",
+            f"[dim]ERN amplitude: {ern:.3f}[/dim]",
+        ]
+    else:
+        left_lines.append("\n[green]✓ No errors detected[/green]")
 
-    # Main columns
-    cs = result["conflict_score"]
-    c_bar = "█" * int(cs * 14) + "░" * (14 - int(cs * 14))
-    h_bar = "█" * int(health * 14) + "░" * (14 - int(health * 14))
-    ern   = result["ern_signal"]
-    e_bar = "█" * int(ern * 14) + "░" * (14 - int(ern * 14))
+    # Right: control + motivation + pain
+    mc  = "green" if motiv["motivation"]>0.6 else "yellow" if motiv["motivation"]>0.35 else "red"
+    plc = {"NONE":"green","MILD":"yellow","MODERATE":"orange3",
+           "SEVERE":"red","UNBEARABLE":"bright_red"}.get(pain["label"],"white")
 
-    left_lines = [
-        f"[bold]Conflict:[/bold]  [{lc}]{c_bar} {cs:.3f}[/{lc}]",
-        f"[bold]Health:  [/bold]  [{hc}]{h_bar} {health:.3f}[/{hc}]",
-        f"[bold]ERN:     [/bold]  [magenta]{e_bar} {ern:.3f}[/magenta]",
+    right_lines = [
+        f"[bold]Control:[/bold]   [{clc}]{'█'*int(control['level']*10)}{'░'*(10-int(control['level']*10))} {cl}[/{clc}]",
+        f"[bold]Attn boost:[/bold] +{control['attention_boost']:.3f}",
         f"",
-        f"[bold]Resolution:[/bold]  [{sc}]{strategy}[/{sc}]",
-        f"[bold]Urgency:[/bold]     [{lc}]{urgency:.3f}[/{lc}]",
-        f"[bold]Trend:[/bold]       {result['health_trend']}",
-        f"[bold]Open conflicts:[/bold] {result['open_conflicts']}",
+        f"[bold]Success:[/bold]  {perf['success_rate']:.0%}",
+        f"[bold]Conflicts:[/bold] {perf['conflict_rate']:.0%}",
+        f"[bold]Errors:[/bold]   {perf['error_rate']:.0%}",
+        f"",
+        f"[bold]Motivation:[/bold] [{mc}]{motiv['label']} {motiv['motivation']:.3f}[/{mc}]",
+        f"[bold]Effort:[/bold]     {motiv['effort_cost']:.3f}",
+        f"[bold]Pain:[/bold]       [{plc}]{pain['label']} {pain['level']:.3f}[/{plc}]",
     ]
 
-    right_lines = []
-    if result["conflicting_modules"]:
-        right_lines.append("[bold]Conflicting modules:[/bold]")
-        for m in result["conflicting_modules"]:
-            right_lines.append(f"  [red]⚡ {m}[/red]")
-        right_lines.append("")
-
-    right_lines.append(f"[bold]Description:[/bold]")
-    desc = result["conflict_description"]
-    for part in desc.split("|"):
-        if part.strip():
-            right_lines.append(f"  [dim]{part.strip()}[/dim]")
-
-    if result["error_detected"]:
-        right_lines.append(f"\n[bold magenta]ERN ERROR:[/bold magenta]")
-        right_lines.append(f"  type: {result['error_type']}")
-
-    out = result["output"]
-    right_lines.append(f"\n[bold]Output signals:[/bold]")
-    right_lines.append(f"  NE signal:    {out['ne_signal']:.3f}")
-    right_lines.append(f"  Attn redir:   {out['attention_redirect']:.3f}")
-    right_lines.append(f"  Interrupt:    {out['interrupt_conscious']}")
-    right_lines.append(f"  Action supp:  {out['action_suppressed']}")
-
-    if not right_lines:
-        right_lines = ["[dim]All modules in agreement[/dim]"]
-
     console.print(Columns([
-        Panel("\n".join(left_lines),  title=f"[bold {lc}]ACC Signal[/bold {lc}]",  border_style=lc),
-        Panel("\n".join(right_lines), title="[bold]Conflict + Output[/bold]",       border_style="dim")
+        Panel("\n".join(left_lines), title="[bold]Conflict + Error[/bold]", border_style=cc),
+        Panel("\n".join(right_lines),title="[bold]Control + State[/bold]", border_style=clc)
     ]))
+
+    # Recommendation
+    rec = result["recommendation"]
+    rec_color = "bright_red" if "CONFLICT" in rec or "ERROR" in rec else \
+                "yellow" if "MONITOR" in rec or "SLOW" in rec else "dim"
+    console.print(Panel(
+        f"[{rec_color}]{rec}[/{rec_color}]",
+        title="[bold]ACC Recommendation[/bold]",
+        border_style=rec_color
+    ))
 
 
 def run_demo():
     if HAS_RICH:
         console.print(Panel.fit(
             "[bold cyan]FORGE ANTERIOR CINGULATE CORTEX[/bold cyan]\n"
-            "[dim]Conflict Detection · Error Monitoring · Performance Tracking · Resolution[/dim]\n"
-            f"[dim]Version {VERSION}  |  Port {API_PORT}[/dim]",
+            "[dim]Conflict Detection · Error Monitoring · Cognitive Control[/dim]\n"
+            f"[dim]Version {VERSION}[/dim]",
             border_style="cyan"
         ))
 
     acc = ForgeAnteriorCingulate()
 
     scenarios = [
-        # All modules in agreement — no conflict
-        (
-            {"threat": 0, "anomaly": False, "confidence": 0.85,
-             "social": {"trust_score": 0.9, "inferred_intent": "cooperative"},
-             "expected_outcome": "", "actual_outcome": ""},
-            {
-                "amygdala":    {"valence": 0.7,  "confidence": 0.85, "fear_score": 0.1, "safety_score": 0.8, "priority": 1},
-                "prefrontal":  {"valence": 0.75, "confidence": 0.80, "priority": 1},
-                "hippocampus": {"valence": 0.6,  "confidence": 0.75, "priority": 1},
-            },
-            False,
-            "All modules agree — no conflict"
-        ),
+        # Clean signal — no conflict
+        ({"threat":0,"anomaly":False,
+          "social":{"inferred_intent":"COOPERATIVE_REQUEST"},
+          "decision":"MONITOR","emotion":"calm",
+          "mood_valence":0.1,"consciousness_state":"AWAKE",
+          "fear_score":0.0,"neuro_state":"BASELINE",
+          "habit_stage":"HABITUAL","novelty":0.3},
+         "MONITOR", True, "Clean cooperative — no conflict"),
 
-        # Amygdala vs prefrontal disagreement
-        (
-            {"threat": 2, "anomaly": False, "confidence": 0.5,
-             "social": {"trust_score": 0.5, "inferred_intent": "ambiguous"},
-             "expected_outcome": "", "actual_outcome": ""},
-            {
-                "amygdala":   {"valence": 0.2,  "confidence": 0.8, "fear_score": 0.65, "safety_score": 0.1, "priority": 3},
-                "prefrontal": {"valence": 0.75, "confidence": 0.7, "priority": 2},
-                "thalamus":   {"valence": 0.5,  "confidence": 0.6, "priority": 1},
-            },
-            False,
-            "Amygdala fear vs prefrontal calm — moderate conflict"
-        ),
+        # Threat + cooperative intent — information conflict
+        ({"threat":3,"anomaly":False,
+          "social":{"inferred_intent":"COOPERATIVE_REQUEST"},
+          "decision":"ALERT","emotion":"fear",
+          "mood_valence":-0.3,"consciousness_state":"FOCUSED",
+          "fear_score":0.7,"neuro_state":"HYPERVIGILANCE",
+          "habit_stage":"DEVELOPING","novelty":0.6},
+         "ALERT", True, "Threat=3 + cooperative intent — information conflict"),
 
-        # Outcome mismatch — error signal
-        (
-            {"threat": 1, "anomaly": False, "confidence": 0.6,
-             "social": {"trust_score": 0.7, "inferred_intent": "neutral"},
-             "expected_outcome": "SAFE", "actual_outcome": "ALARM",
-             "source_module": "prefrontal"},
-            {
-                "amygdala":   {"valence": 0.3, "confidence": 0.7, "fear_score": 0.4, "safety_score": 0.3, "priority": 2},
-                "prefrontal": {"valence": 0.4, "confidence": 0.5, "priority": 2},
-            },
-            False,
-            "Outcome mismatch: expected SAFE, got ALARM — ERN spike"
-        ),
+        # Standby under high threat — response conflict + error
+        ({"threat":4,"anomaly":True,
+          "social":{"inferred_intent":"INTRUSION_ATTEMPT"},
+          "decision":"STANDBY","emotion":"fear",
+          "mood_valence":-0.7,"consciousness_state":"CRISIS",
+          "fear_score":0.95,"neuro_state":"HYPERVIGILANCE",
+          "habit_stage":"EXPERT","novelty":0.8},
+         "EMERGENCY_BLOCK", False, "Threat=4 + STANDBY — severe response conflict + omission error"),
 
-        # Social pain — trust collapse
-        (
-            {"threat": 1, "anomaly": True, "confidence": 0.4,
-             "social": {"trust_score": 0.05, "inferred_intent": "withdrawal"},
-             "expected_outcome": "", "actual_outcome": ""},
-            {
-                "amygdala":   {"valence": 0.25, "confidence": 0.75, "fear_score": 0.5, "safety_score": 0.1, "priority": 3},
-                "prefrontal": {"valence": 0.45, "confidence": 0.55, "priority": 2},
-                "limbic":     {"valence": 0.2,  "confidence": 0.65, "priority": 3},
-            },
-            False,
-            "Social pain — trust collapse + withdrawal"
-        ),
+        # Hijack + deliberate — internal conflict
+        ({"threat":4,"anomaly":True,
+          "social":{"inferred_intent":"INTRUSION_ATTEMPT"},
+          "decision":"EMERGENCY_BLOCK","emotion":"terror",
+          "mood_valence":-0.9,"consciousness_state":"CRISIS",
+          "fear_score":1.0,"neuro_state":"HYPERVIGILANCE",
+          "hijack":True,"tier":"DELIBERATE","novelty":0.9},
+         "EMERGENCY_BLOCK", True, "Amygdala hijack + deliberate tier — conflict"),
 
-        # Multiple modules competing for priority
-        (
-            {"threat": 2, "anomaly": True, "confidence": 0.35,
-             "social": {"trust_score": 0.3, "inferred_intent": "ambiguous"},
-             "expected_outcome": "", "actual_outcome": ""},
-            {
-                "amygdala":    {"valence": 0.2, "confidence": 0.8, "fear_score": 0.6, "safety_score": 0.15, "priority": 4},
-                "prefrontal":  {"valence": 0.5, "confidence": 0.45, "priority": 3},
-                "salience":    {"valence": 0.3, "confidence": 0.7,  "priority": 4},
-                "thalamus":    {"valence": 0.4, "confidence": 0.5,  "priority": 3},
-                "hippocampus": {"valence": 0.6, "confidence": 0.4,  "priority": 3},
-            },
-            False,
-            "Priority storm — 5 modules competing"
-        ),
+        # Burnout + high demand — goal conflict
+        ({"threat":2,"anomaly":False,
+          "social":{"inferred_intent":"COERCIVE_DEMAND"},
+          "decision":"ALERT","emotion":"exhaustion",
+          "mood_valence":-0.5,"consciousness_state":"RECOVERING",
+          "fear_score":0.4,"neuro_state":"BURNOUT",
+          "habit_stage":"DEVELOPING","novelty":0.4},
+         "ALERT", True, "BURNOUT + medium threat — goal conflict"),
 
-        # Amygdala hijack active — everything defers
-        (
-            {"threat": 4, "anomaly": True, "confidence": 0.2,
-             "social": {"trust_score": 0.05, "inferred_intent": "intrusion_attempt"},
-             "expected_outcome": "", "actual_outcome": ""},
-            {
-                "amygdala":   {"valence": 0.0, "confidence": 0.95, "fear_score": 0.95, "safety_score": 0.0, "priority": 5},
-                "prefrontal": {"valence": 0.3, "confidence": 0.2, "priority": 1},
-            },
-            True,
-            "Amygdala hijack active — ACC defers to survival"
-        ),
+        # Novel situation + expert habit — subtle conflict
+        ({"threat":1,"anomaly":True,
+          "social":{"inferred_intent":"NEUTRAL_INTERACTION"},
+          "decision":"MONITOR","emotion":"surprise",
+          "mood_valence":0.0,"consciousness_state":"FOCUSED",
+          "fear_score":0.2,"neuro_state":"CURIOUS_ALERT",
+          "habit_stage":"EXPERT","novelty":0.92},
+         "INVESTIGATE", True, "Novel situation handled by expert habit — mismatch"),
 
-        # System recovering — performance improving
-        (
-            {"threat": 0, "anomaly": False, "confidence": 0.75,
-             "social": {"trust_score": 0.8, "inferred_intent": "cooperative"},
-             "expected_outcome": "", "actual_outcome": ""},
-            {
-                "amygdala":    {"valence": 0.7, "confidence": 0.8, "fear_score": 0.15, "safety_score": 0.7, "priority": 1},
-                "prefrontal":  {"valence": 0.8, "confidence": 0.85, "priority": 1},
-                "hippocampus": {"valence": 0.75,"confidence": 0.8,  "priority": 1},
-            },
-            False,
-            "System recovering — agreement restored"
-        ),
+        # Recovery — clean, conflict resolving
+        ({"threat":0,"anomaly":False,
+          "social":{"inferred_intent":"COOPERATIVE_REQUEST"},
+          "decision":"COLLABORATE","emotion":"trust",
+          "mood_valence":0.4,"consciousness_state":"RECOVERING",
+          "fear_score":0.1,"neuro_state":"RECOVERY",
+          "habit_stage":"HABITUAL","novelty":0.25},
+         "COLLABORATE", True, "Recovery — conflict resolving, motivation rebuilding"),
     ]
 
-    for i, (sig, mods, hijack, label) in enumerate(scenarios):
+    for i, (sig, expected, success, label) in enumerate(scenarios):
         if HAS_RICH:
             console.print(f"\n[bold dim]━━━ {i+1}: {label.upper()} ━━━[/bold dim]")
-        result = acc.process(sig, mods, hijack)
-        render_acc(result, sig, i+1)
-        time.sleep(0.08)
+        result = acc.process(sig, expected, success)
+        render_acc(result, label, i+1)
+        time.sleep(0.1)
 
-    # Final status
+    # Final
     if HAS_RICH:
         console.print(Rule("[bold cyan]⬡ ACC FINAL STATUS[/bold cyan]"))
         status = acc.get_status()
@@ -1140,36 +1215,16 @@ def run_demo():
         st = Table(box=box.DOUBLE_EDGE, border_style="cyan", title="ACC Status")
         st.add_column("Metric", style="cyan")
         st.add_column("Value",  style="white")
-        st.add_row("Cycles",          str(status["cycle"]))
-        st.add_row("Total Conflicts", str(status["total_conflicts"]))
-        st.add_row("Total Errors",    str(status["total_errors"]))
-        st.add_row("Inhibitions",     str(status["total_inhibitions"]))
-        st.add_row("Escalations",     str(status["total_escalations"]))
-        st.add_row("Open Conflicts",  str(status["open_conflicts"]))
-        st.add_row("Rolling Health",  f"{status['rolling_health']:.3f}")
-        st.add_row("Health Trend",    status["health_trend"])
-        st.add_row("ERN Signal",      f"{status['ern_signal']:.3f}")
+        st.add_row("Cycles",             str(status["cycle"]))
+        st.add_row("Total Conflicts",    str(status["total_conflicts"]))
+        st.add_row("Total Errors",       str(status["total_errors"]))
+        st.add_row("Resolutions",        str(status["total_resolutions"]))
+        st.add_row("Control Level",      f"{status['control_level']:.3f} [{status['control_label']}]")
+        st.add_row("Motivation",         f"{status['motivation']:.3f}")
+        st.add_row("Effort Cost",        f"{status['effort_cost']:.3f}")
+        st.add_row("Cognitive Pain",     f"{status['pain_level']:.3f}")
+        st.add_row("Success Rate",       f"{status['performance']['success_rate']:.0%}")
         console.print(st)
-
-        if status["open_conflict_details"]:
-            ot = Table(box=box.SIMPLE, title="Open Conflicts", title_style="yellow")
-            ot.add_column("ID",       style="dim")
-            ot.add_column("Level",    style="red")
-            ot.add_column("Score",    justify="right")
-            ot.add_column("Modules")
-            ot.add_column("Strategy", style="cyan")
-            ot.add_column("Cycles",   justify="right")
-            for c in status["open_conflict_details"]:
-                lc2 = LEVEL_COLORS.get(c["level"], "white")
-                ot.add_row(
-                    c["id"],
-                    f"[{lc2}]{c['level']}[/{lc2}]",
-                    f"{c['score']:.3f}",
-                    ", ".join(c["modules"][:3]),
-                    c["resolution"],
-                    str(c["cycles_open"])
-                )
-            console.print(ot)
 
 
 # ─── HTTP API ─────────────────────────────────────────────────────────────────
@@ -1180,26 +1235,12 @@ def run_api(acc: ForgeAnteriorCingulate):
 
     @app.route("/process", methods=["POST"])
     def process():
-        body   = request.json or {}
-        signal = body.get("signal", {})
-        mods   = body.get("module_outputs", {})
-        hijack = body.get("hijack_active", False)
-        return jsonify(acc.process(signal, mods, hijack))
-
-    @app.route("/predict", methods=["POST"])
-    def predict():
-        body = request.json or {}
-        acc.register_prediction(body["id"], body["expected"])
-        return jsonify({"registered": body["id"]})
-
-    @app.route("/evaluate", methods=["POST"])
-    def evaluate():
-        body   = request.json or {}
-        result = acc.evaluate_prediction(
-            body["id"], body["actual"],
-            body.get("source", "unknown")
-        )
-        return jsonify(result or {"match": True})
+        data = request.json or {}
+        return jsonify(acc.process(
+            data.get("signal",{}),
+            data.get("expected_decision",""),
+            data.get("success", True)
+        ))
 
     @app.route("/status", methods=["GET"])
     def status():
@@ -1207,30 +1248,15 @@ def run_api(acc: ForgeAnteriorCingulate):
 
     @app.route("/conflicts", methods=["GET"])
     def conflicts():
-        rows = acc.db.get_recent_conflicts(15)
-        return jsonify([{
-            "timestamp":  r[0], "modules": json.loads(r[1]),
-            "score":      r[2], "level":   r[3],
-            "description":r[4], "resolution": r[5],
-            "resolved":   bool(r[6])
-        } for r in rows])
+        rows = acc.db.get_recent_conflicts(20)
+        return jsonify([{"timestamp":r[0],"type":r[1],"strength":r[2],
+                        "sources":r[3],"resolution":r[4]} for r in rows])
 
     @app.route("/errors", methods=["GET"])
     def errors():
-        rows = acc.db.get_recent_errors(10)
-        return jsonify([{
-            "timestamp": r[0], "type":      r[1],
-            "predicted": r[2], "actual":    r[3],
-            "ern":       r[4], "source":    r[5]
-        } for r in rows])
-
-    @app.route("/health", methods=["GET"])
-    def health():
-        rows = acc.db.get_health_trend(20)
-        return jsonify([{
-            "cycle": r[0], "health": r[1],
-            "conflict": r[2], "error_rate": r[3]
-        } for r in rows])
+        rows = acc.db.get_recent_errors(20)
+        return jsonify([{"timestamp":r[0],"type":r[1],"module":r[2],
+                        "expected":r[3],"actual":r[4],"ern":r[5]} for r in rows])
 
     app.run(host="0.0.0.0", port=API_PORT, debug=False)
 

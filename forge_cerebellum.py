@@ -3,59 +3,49 @@ FORGE Cerebellum — forge_cerebellum.py
 ========================================
 AI analog of the brain's cerebellum.
 
-The cerebellum is the brain's precision engine — a massive
-structure containing more neurons than the rest of the brain
-combined, dedicated entirely to one thing: making everything
-smoother, faster, and more accurate through practice.
+The cerebellum is the brain's PRECISION ENGINE.
+It doesn't initiate — it perfects.
 
-It doesn't initiate actions. It doesn't make decisions.
-It watches what the rest of the brain does, builds an
-internal model of how things work, and then provides
-real-time corrections that make execution effortless.
+Key insight: The cerebellum receives a copy of every motor command
+BEFORE it executes, predicts what the outcome should be, then
+compares prediction to actual. The difference (error signal) is
+used to refine the next attempt.
 
-Key insight: The cerebellum is why a skilled pianist doesn't
-think about finger placement. It has built a forward model
-so accurate that it can predict the sensory consequence of
-every action before it happens — and correct errors before
-they even occur.
+This is called the FORWARD MODEL — predict → act → compare → correct.
 
 Four core functions:
 
-  1. FORWARD MODEL LEARNING (predictive motor control)
-     Every time a module produces an output, the cerebellum
-     records: what was the input? what was the output?
-     what was the actual result?
-     Over thousands of repetitions, it builds a forward model:
-     given this input, this action produces this result.
-     The model gets more accurate with every cycle.
+  1. TIMING COORDINATION
+     Ensures all modules fire in the correct temporal sequence.
+     Detects when modules are out of sync (temporal dysmetria).
+     Maintains cognitive rhythm — the brain's internal clock.
 
-  2. ERROR CORRECTION (real-time adjustment)
-     Before a module sends its output, the cerebellum
-     compares the predicted outcome vs the likely actual.
-     If they diverge, it sends a correction signal.
-     This is the cerebellar "climbing fiber" error signal —
-     the most powerful learning signal in the brain.
+  2. ERROR CORRECTION (Forward Model)
+     Before an action: predicts expected outcome
+     After an action:  compares prediction vs actual
+     Difference:       sends correction signal back
+     Next time:        prediction is more accurate
+     This is how FORGE gets SMOOTHER over time.
 
-  3. TIMING (precise temporal coordination)
-     The cerebellum is the brain's clock.
-     It coordinates the timing of signals across modules —
-     ensuring that prefrontal, amygdala, hippocampus all
-     fire in the right sequence rather than a chaotic pile-up.
-     Poor timing = cognitive dysrhythmia = errors.
+  3. MOTOR LEARNING (LTD — Long-Term Depression)
+     Repeated errors weaken the synapses that caused them.
+     Repeated successes strengthen the correct pathways.
+     The cerebellum learns by SUBTRACTION — removing what's wrong.
 
-  4. SKILL CONSOLIDATION (automaticity)
-     Repeated patterns get compressed into automatic routines.
-     What once required conscious attention becomes effortless.
-     The cerebellum is why expertise feels like intuition —
-     it has offloaded the computation to a fast, automatic layer.
+  4. SEQUENCE OPTIMIZATION
+     Breaks complex actions into precise timed sub-steps.
+     Optimizes the inter-module timing for minimum latency.
+     Detects when the pipeline has timing anomalies.
 
 Architecture:
-  ForwardModelLibrary  → stores learned input→output mappings
-  ErrorCorrectionEngine→ computes and applies corrections
-  TimingCoordinator    → manages inter-module timing
-  SkillConsolidator    → compresses repeated patterns
-  CerebellarPredictor  → generates pre-movement predictions
-  CerebellarOutput     → smooth signal to downstream modules
+  ForwardModel         → predict outcome before acting
+  ErrorCalculator      → actual - predicted = error signal
+  TimingCoordinator    → synchronize module firing sequences
+  SequenceOptimizer    → optimize multi-step action timing
+  PurkinjeCells        → learn from error (LTD mechanism)
+  GranuleCells         → pattern storage for timing sequences
+  OliveInput           → error signal broadcaster
+  AdaptiveFilter       → smooth out noisy pipeline behavior
 """
 
 import json
@@ -76,6 +66,7 @@ try:
     from rich.table import Table
     from rich.columns import Columns
     from rich.rule import Rule
+    from rich.text import Text
     from rich import box
     HAS_RICH = True
 except ImportError:
@@ -90,92 +81,140 @@ except ImportError:
 # ─── Constants ────────────────────────────────────────────────────────────────
 
 DB_PATH  = "forge_cerebellum.db"
-API_PORT = 7800
+API_PORT = 7793
 VERSION  = "1.0.0"
 
+# Timing thresholds (milliseconds)
+TIMING_IDEAL     = {
+    "reflex":        8.0,
+    "fast":          50.0,
+    "deliberate":    260.0,
+    "pipeline_full": 300.0,
+    "module_ping":   5.0,
+}
+TIMING_TOLERANCE = 0.25   # 25% tolerance before flagging
+
 # Learning rates
-FORWARD_MODEL_LR    = 0.12   # how fast forward models update
-ERROR_SIGNAL_DECAY  = 0.15   # climbing fiber signal decay per cycle
-SKILL_THRESHOLD     = 8      # repetitions before skill consolidation
-AUTOMATICITY_MAX    = 0.95   # asymptote for automaticity score
+LTD_RATE         = 0.08   # Long-Term Depression (error weakens)
+LTP_RATE         = 0.05   # Long-Term Potentiation (success strengthens)
+PREDICTION_ALPHA = 0.20   # Forward model update rate
 
-# Timing
-TIMING_WINDOW       = 12     # cycles for timing analysis
-TIMING_JITTER_MAX   = 0.30   # jitter above this = dysrhythmia
-
-# Correction
-MAX_CORRECTION      = 0.35   # max adjustment cerebellum can apply
-CORRECTION_DEADBAND = 0.05   # below this — no correction applied
-
-# Prediction confidence
-MIN_SAMPLES_TO_PREDICT = 3   # need this many samples before predicting
+# Dysmetria thresholds
+DYSMETRIA_MILD   = 1.5    # 1.5× expected timing
+DYSMETRIA_SEVERE = 3.0    # 3× expected timing
 
 console = Console() if HAS_RICH else None
 
 # ─── Enums ────────────────────────────────────────────────────────────────────
 
-class SkillLevel(Enum):
-    NAIVE        = "NAIVE"        # first encounter
-    LEARNING     = "LEARNING"     # actively building model
-    COMPETENT    = "COMPETENT"    # model reliable
-    PROFICIENT   = "PROFICIENT"   # smooth, fast, low-error
-    AUTOMATIC    = "AUTOMATIC"    # fully consolidated — effortless
+class TimingStatus(Enum):
+    PRECISE   = "PRECISE"     # within tolerance
+    EARLY     = "EARLY"       # faster than expected
+    LATE      = "LATE"        # slower than expected
+    DYSMETRIC = "DYSMETRIC"   # severely off timing
 
-class TimingState(Enum):
-    SYNCHRONOUS  = "SYNCHRONOUS"  # modules firing in good sequence
-    DRIFTING     = "DRIFTING"     # slight timing irregularity
-    DYSRHYTHMIC  = "DYSRHYTHMIC"  # significant timing problems
-    DESYNCHRONIZED="DESYNCHRONIZED" # modules out of phase
+class ErrorType(Enum):
+    NONE      = "NONE"
+    TIMING    = "TIMING"      # wrong timing
+    SEQUENCE  = "SEQUENCE"    # wrong order
+    MAGNITUDE = "MAGNITUDE"   # wrong amplitude
+    DIRECTION = "DIRECTION"   # wrong direction
 
-class CorrectionType(Enum):
-    NONE         = "NONE"
-    MINOR        = "MINOR"        # < 10% adjustment
-    MODERATE     = "MODERATE"     # 10-25% adjustment
-    SIGNIFICANT  = "SIGNIFICANT"  # > 25% adjustment
-    OVERRIDE     = "OVERRIDE"     # cerebellum strongly disagrees
+class LearningPhase(Enum):
+    ACQUISITION  = "ACQUISITION"  # learning new pattern
+    CONSOLIDATION= "CONSOLIDATION"# strengthening
+    REFINEMENT   = "REFINEMENT"   # fine-tuning
+    EXPERT       = "EXPERT"       # fully optimized
 
 # ─── Data Models ──────────────────────────────────────────────────────────────
 
 @dataclass
-class ForwardModel:
-    """A learned mapping: context → expected output."""
-    id:            str   = field(default_factory=lambda: str(uuid.uuid4())[:8])
-    pattern_key:   str   = ""      # hashed context fingerprint
-    module:        str   = ""      # which module this models
-    samples:       int   = 0       # training examples seen
-    predicted_val: float = 0.0     # current prediction
-    actual_mean:   float = 0.0     # running mean of actual outputs
-    error_mean:    float = 0.0     # running mean of prediction error
-    accuracy:      float = 0.0     # 1 - normalized_error
-    skill_level:   str   = SkillLevel.NAIVE.value
-    automaticity:  float = 0.0     # 0-1 automaticity score
-    last_updated:  str   = field(default_factory=lambda: datetime.now().isoformat())
-    created:       str   = field(default_factory=lambda: datetime.now().isoformat())
+class TimingRecord:
+    """Records actual vs predicted timing for a module."""
+    module:       str   = ""
+    operation:    str   = ""
+    predicted_ms: float = 0.0
+    actual_ms:    float = 0.0
+    error_ms:     float = 0.0
+    error_pct:    float = 0.0
+    status:       str   = TimingStatus.PRECISE.value
+    timestamp:    str   = field(default_factory=lambda: datetime.now().isoformat())
+    cycle:        int   = 0
 
 @dataclass
-class CorrectionEvent:
-    """A cerebellar correction applied to a module output."""
-    id:             str   = field(default_factory=lambda: str(uuid.uuid4())[:8])
-    timestamp:      str   = field(default_factory=lambda: datetime.now().isoformat())
-    cycle:          int   = 0
-    module:         str   = ""
-    raw_value:      float = 0.0
-    corrected_value:float = 0.0
-    correction_delta:float= 0.0
-    correction_type:str   = CorrectionType.NONE.value
-    pattern_key:    str   = ""
-    model_accuracy: float = 0.0
+class ForwardPrediction:
+    """A prediction made before an action executes."""
+    id:           str   = field(default_factory=lambda: str(uuid.uuid4())[:8])
+    timestamp:    str   = field(default_factory=lambda: datetime.now().isoformat())
+    module:       str   = ""
+    action:       str   = ""
+    predicted_latency_ms: float = 0.0
+    predicted_outcome:    str   = ""
+    predicted_success_prob:float= 0.5
+    context_hash: str   = ""
+    cycle:        int   = 0
 
 @dataclass
-class TimingEvent:
-    """A timing coordination event."""
-    id:          str   = field(default_factory=lambda: str(uuid.uuid4())[:8])
-    timestamp:   str   = field(default_factory=lambda: datetime.now().isoformat())
-    cycle:       int   = 0
-    state:       str   = TimingState.SYNCHRONOUS.value
-    jitter:      float = 0.0
-    modules_late: list = field(default_factory=list)
-    correction_applied: bool = False
+class ErrorSignal:
+    """Error signal computed after action completes."""
+    id:           str   = field(default_factory=lambda: str(uuid.uuid4())[:8])
+    timestamp:    str   = field(default_factory=lambda: datetime.now().isoformat())
+    prediction_id:str   = ""
+    module:       str   = ""
+    action:       str   = ""
+    error_type:   str   = ErrorType.NONE.value
+    timing_error: float = 0.0   # actual - predicted latency
+    outcome_error:float = 0.0   # 0=perfect, 1=completely wrong
+    magnitude:    float = 0.0   # how large the error was
+    correction:   dict  = field(default_factory=dict)
+    cycle:        int   = 0
+
+@dataclass
+class PurkinjeCell:
+    """
+    Models a Purkinje cell — the learning unit of the cerebellum.
+    Each Purkinje cell is responsible for one module/action pattern.
+    Receives climbing fiber input (error) and parallel fiber input (context).
+    LTD weakens the synapses that caused errors.
+    """
+    id:           str   = field(default_factory=lambda: str(uuid.uuid4())[:8])
+    module:       str   = ""
+    action:       str   = ""
+    synaptic_weight: float = 0.5   # 0-1 strength of this cell
+    error_history:   deque = field(default_factory=lambda: deque(maxlen=50))
+    correction_count:int   = 0
+    learning_phase:  str   = LearningPhase.ACQUISITION.value
+    timing_bias:     float = 0.0   # learned timing offset
+
+    @property
+    def reliability(self) -> float:
+        if not self.error_history: return 0.5
+        recent = list(self.error_history)[-10:]
+        return round(1.0 - sum(abs(e) for e in recent) / (len(recent) * 10), 3)
+
+@dataclass
+class SequencePattern:
+    """A learned timing pattern for a multi-module sequence."""
+    id:           str   = field(default_factory=lambda: str(uuid.uuid4())[:8])
+    name:         str   = ""
+    modules:      list  = field(default_factory=list)   # ordered module sequence
+    ideal_timings:list  = field(default_factory=list)   # ms between each step
+    actual_timings:list = field(default_factory=list)   # observed timings
+    success_count:int   = 0
+    error_count:  int   = 0
+    optimized:    bool  = False
+
+@dataclass
+class CerebellarOutput:
+    """The cerebellum's output — corrections + timing adjustments."""
+    timestamp:    str   = field(default_factory=lambda: datetime.now().isoformat())
+    cycle:        int   = 0
+    timing_corrections: dict = field(default_factory=dict)   # module → ms adjustment
+    smoothing_weights:  dict = field(default_factory=dict)   # module → gain
+    error_signals:      list = field(default_factory=list)
+    dysmetric_modules:  list = field(default_factory=list)
+    overall_smoothness: float = 1.0   # 0=chaotic, 1=perfectly smooth
+    pipeline_rhythm:    str   = "STEADY"
 
 # ─── Database ─────────────────────────────────────────────────────────────────
 
@@ -188,817 +227,831 @@ class CerebellumDB:
     def _init(self):
         with self.lock:
             self.conn.executescript("""
-                CREATE TABLE IF NOT EXISTS forward_models (
-                    id TEXT PRIMARY KEY, pattern_key TEXT, module TEXT,
-                    samples INTEGER, predicted_val REAL, actual_mean REAL,
-                    error_mean REAL, accuracy REAL, skill_level TEXT,
-                    automaticity REAL, last_updated TEXT, created TEXT
+                CREATE TABLE IF NOT EXISTS timing_records (
+                    id TEXT PRIMARY KEY DEFAULT (hex(randomblob(4))),
+                    module TEXT, operation TEXT,
+                    predicted_ms REAL, actual_ms REAL,
+                    error_ms REAL, error_pct REAL,
+                    status TEXT, timestamp TEXT, cycle INTEGER
                 );
-                CREATE TABLE IF NOT EXISTS corrections (
-                    id TEXT PRIMARY KEY, timestamp TEXT, cycle INTEGER,
-                    module TEXT, raw_value REAL, corrected_value REAL,
-                    correction_delta REAL, correction_type TEXT,
-                    pattern_key TEXT, model_accuracy REAL
+                CREATE TABLE IF NOT EXISTS forward_predictions (
+                    id TEXT PRIMARY KEY, timestamp TEXT,
+                    module TEXT, action TEXT,
+                    predicted_latency_ms REAL,
+                    predicted_outcome TEXT,
+                    predicted_success_prob REAL,
+                    context_hash TEXT, cycle INTEGER
                 );
-                CREATE TABLE IF NOT EXISTS timing_events (
-                    id TEXT PRIMARY KEY, timestamp TEXT, cycle INTEGER,
-                    state TEXT, jitter REAL, modules_late TEXT,
-                    correction_applied INTEGER
+                CREATE TABLE IF NOT EXISTS error_signals (
+                    id TEXT PRIMARY KEY, timestamp TEXT,
+                    prediction_id TEXT, module TEXT, action TEXT,
+                    error_type TEXT, timing_error REAL,
+                    outcome_error REAL, magnitude REAL,
+                    correction TEXT, cycle INTEGER
                 );
-                CREATE TABLE IF NOT EXISTS skill_consolidations (
-                    id TEXT PRIMARY KEY, timestamp TEXT, cycle INTEGER,
-                    module TEXT, pattern_key TEXT, from_level TEXT,
-                    to_level TEXT, automaticity REAL, samples INTEGER
+                CREATE TABLE IF NOT EXISTS purkinje_cells (
+                    id TEXT PRIMARY KEY, module TEXT, action TEXT,
+                    synaptic_weight REAL, correction_count INTEGER,
+                    learning_phase TEXT, timing_bias REAL
+                );
+                CREATE TABLE IF NOT EXISTS sequence_patterns (
+                    id TEXT PRIMARY KEY, name TEXT,
+                    modules TEXT, ideal_timings TEXT,
+                    actual_timings TEXT, success_count INTEGER,
+                    error_count INTEGER, optimized INTEGER
                 );
             """)
             self.conn.commit()
 
-    def save_model(self, m: ForwardModel):
+    def save_timing(self, t: TimingRecord):
         with self.lock:
             self.conn.execute("""
-                INSERT OR REPLACE INTO forward_models VALUES
-                (?,?,?,?,?,?,?,?,?,?,?,?)
-            """, (m.id, m.pattern_key, m.module, m.samples,
-                  m.predicted_val, m.actual_mean, m.error_mean,
-                  m.accuracy, m.skill_level, m.automaticity,
-                  m.last_updated, m.created))
+                INSERT INTO timing_records
+                (module, operation, predicted_ms, actual_ms,
+                 error_ms, error_pct, status, timestamp, cycle)
+                VALUES (?,?,?,?,?,?,?,?,?)
+            """, (t.module, t.operation, t.predicted_ms, t.actual_ms,
+                  t.error_ms, t.error_pct, t.status, t.timestamp, t.cycle))
             self.conn.commit()
 
-    def save_correction(self, c: CorrectionEvent):
+    def save_prediction(self, p: ForwardPrediction):
         with self.lock:
             self.conn.execute("""
-                INSERT OR REPLACE INTO corrections VALUES
-                (?,?,?,?,?,?,?,?,?,?)
-            """, (c.id, c.timestamp, c.cycle, c.module,
-                  c.raw_value, c.corrected_value, c.correction_delta,
-                  c.correction_type, c.pattern_key, c.model_accuracy))
+                INSERT OR REPLACE INTO forward_predictions VALUES
+                (?,?,?,?,?,?,?,?,?)
+            """, (p.id, p.timestamp, p.module, p.action,
+                  p.predicted_latency_ms, p.predicted_outcome,
+                  p.predicted_success_prob, p.context_hash, p.cycle))
             self.conn.commit()
 
-    def save_timing(self, t: TimingEvent):
+    def save_error(self, e: ErrorSignal):
         with self.lock:
             self.conn.execute("""
-                INSERT OR REPLACE INTO timing_events VALUES
+                INSERT OR REPLACE INTO error_signals VALUES
+                (?,?,?,?,?,?,?,?,?,?,?)
+            """, (e.id, e.timestamp, e.prediction_id, e.module,
+                  e.action, e.error_type, e.timing_error,
+                  e.outcome_error, e.magnitude,
+                  json.dumps(e.correction), e.cycle))
+            self.conn.commit()
+
+    def save_purkinje(self, p: PurkinjeCell):
+        with self.lock:
+            self.conn.execute("""
+                INSERT OR REPLACE INTO purkinje_cells VALUES
                 (?,?,?,?,?,?,?)
-            """, (t.id, t.timestamp, t.cycle, t.state,
-                  t.jitter, json.dumps(t.modules_late),
-                  int(t.correction_applied)))
+            """, (p.id, p.module, p.action, p.synaptic_weight,
+                  p.correction_count, p.learning_phase, p.timing_bias))
             self.conn.commit()
 
-    def log_consolidation(self, cycle: int, module: str, key: str,
-                          from_lvl: str, to_lvl: str,
-                          automaticity: float, samples: int):
+    def save_sequence(self, s: SequencePattern):
         with self.lock:
             self.conn.execute("""
-                INSERT INTO skill_consolidations VALUES (?,?,?,?,?,?,?,?,?)
-            """, (str(uuid.uuid4())[:8], datetime.now().isoformat(),
-                  cycle, module, key, from_lvl, to_lvl, automaticity, samples))
+                INSERT OR REPLACE INTO sequence_patterns VALUES
+                (?,?,?,?,?,?,?,?)
+            """, (s.id, s.name, json.dumps(s.modules),
+                  json.dumps(s.ideal_timings), json.dumps(s.actual_timings),
+                  s.success_count, s.error_count, int(s.optimized)))
             self.conn.commit()
 
-    def get_models(self, min_samples=1):
+    def get_timing_history(self, module: str, limit=20):
         with self.lock:
             return self.conn.execute("""
-                SELECT module, pattern_key, samples, accuracy,
-                       skill_level, automaticity, error_mean
-                FROM forward_models WHERE samples >= ?
-                ORDER BY automaticity DESC
-            """, (min_samples,)).fetchall()
+                SELECT module, operation, predicted_ms, actual_ms,
+                       error_ms, status, timestamp
+                FROM timing_records WHERE module=?
+                ORDER BY timestamp DESC LIMIT ?
+            """, (module, limit)).fetchall()
 
-    def get_recent_corrections(self, limit=15):
+    def get_recent_errors(self, limit=20):
         with self.lock:
             return self.conn.execute("""
-                SELECT cycle, module, raw_value, corrected_value,
-                       correction_delta, correction_type, model_accuracy
-                FROM corrections ORDER BY cycle DESC LIMIT ?
+                SELECT module, action, error_type, timing_error,
+                       outcome_error, magnitude, timestamp
+                FROM error_signals ORDER BY timestamp DESC LIMIT ?
             """, (limit,)).fetchall()
 
-    def get_timing_history(self, limit=10):
+    def get_purkinje_cells(self):
         with self.lock:
             return self.conn.execute("""
-                SELECT cycle, state, jitter, correction_applied
-                FROM timing_events ORDER BY cycle DESC LIMIT ?
-            """, (limit,)).fetchall()
+                SELECT module, action, synaptic_weight,
+                       correction_count, learning_phase, timing_bias
+                FROM purkinje_cells ORDER BY synaptic_weight DESC
+            """).fetchall()
 
 
-# ─── Forward Model Library ────────────────────────────────────────────────────
+# ─── Forward Model ────────────────────────────────────────────────────────────
 
-class ForwardModelLibrary:
+class ForwardModel:
     """
-    Stores and updates learned forward models.
+    Predicts what SHOULD happen before it happens.
+    The cerebellum's predictive engine.
 
-    A forward model maps: context → predicted output
-    The cerebellum maintains one model per module per context type.
+    Before any module fires:
+      → predict its latency
+      → predict likely outcome
+      → predict success probability
 
-    Learning algorithm: running weighted average.
-    New samples update the model with weight FORWARD_MODEL_LR.
-    Old knowledge decays gently — the model stays current.
-
-    Key property: the model's prediction improves monotonically
-    with experience, but never reaches perfect accuracy.
-    There is always residual uncertainty — which is healthy.
+    After it fires:
+      → compare prediction to reality
+      → compute error
+      → update model for next time
     """
 
     def __init__(self, db: CerebellumDB):
-        self.db     = db
-        self.models: dict[str, ForwardModel] = {}
+        self.db = db
+        # Learned latency predictions per module
+        self.latency_model: dict[str, float] = {
+            "temporal":       25.0,
+            "salience":       15.0,
+            "visual":         20.0,
+            "limbic":         30.0,
+            "neuromodulator": 35.0,
+            "amygdala":       12.0,
+            "bridge":         40.0,
+            "hippocampus":    120.0,
+            "prefrontal":     25.0,
+            "sensorimotor":   15.0,
+            "basal_ganglia":  10.0,
+            "thalamus":       10.0,
+            "dmn":            5.0,
+            "swarm":          12.0,
+            "orchestrator":   300.0,
+        }
+        self.outcome_model: dict[str, float] = defaultdict(lambda: 0.7)
+        self.predictions:   dict[str, ForwardPrediction] = {}
 
-    def _key(self, module: str, pattern: str) -> str:
-        return f"{module}::{pattern}"
+    def predict(self, module: str, action: str,
+                context: dict, cycle: int) -> ForwardPrediction:
+        """Make a prediction before the action executes."""
+        import hashlib
+        ctx_hash = hashlib.md5(
+            json.dumps(sorted(context.items()), default=str).encode()
+        ).hexdigest()[:8]
 
-    def update(self, module: str, pattern: str,
-               actual: float, cycle: int) -> ForwardModel:
-        """Update forward model with new observation."""
-        key = self._key(module, pattern)
+        predicted_ms = self.latency_model.get(module, 50.0)
+        # Adjust for threat level
+        threat = context.get("threat", 0)
+        if threat >= 3: predicted_ms *= 0.85  # crisis = faster
+        if threat == 0: predicted_ms *= 1.05  # calm = slightly slower
 
-        if key not in self.models:
-            model = ForwardModel(
-                pattern_key  = pattern,
-                module       = module,
-                samples      = 0,
-                predicted_val= actual,
-                actual_mean  = actual,
-                error_mean   = 0.0,
-                accuracy     = 0.5,
-            )
-            self.models[key] = model
-        else:
-            model = self.models[key]
+        success_prob = self.outcome_model[f"{module}:{action}"]
 
-        prev_predicted = model.predicted_val
-        error          = abs(actual - prev_predicted)
+        pred = ForwardPrediction(
+            module               = module,
+            action               = action,
+            predicted_latency_ms = round(predicted_ms, 2),
+            predicted_outcome    = "success" if success_prob > 0.5 else "uncertain",
+            predicted_success_prob = round(success_prob, 3),
+            context_hash         = ctx_hash,
+            cycle                = cycle
+        )
+        self.predictions[pred.id] = pred
+        self.db.save_prediction(pred)
+        return pred
 
-        # Running weighted average update
-        α = FORWARD_MODEL_LR
-        model.actual_mean  = round(model.actual_mean  * (1-α) + actual * α, 5)
-        model.predicted_val= round(model.predicted_val* (1-α) + actual * α, 5)
-        model.error_mean   = round(model.error_mean   * (1-α) + error  * α, 5)
-        model.samples     += 1
+    def update(self, pred: ForwardPrediction,
+               actual_ms: float, actual_success: bool) -> float:
+        """Update forward model based on actual outcome. Returns error."""
+        # Timing error
+        timing_error = actual_ms - pred.predicted_latency_ms
 
-        # Accuracy: inverse of normalized error
-        model.accuracy = round(
-            max(0.0, 1.0 - min(1.0, model.error_mean * 3.0)), 4
+        # Update latency model (exponential moving average)
+        old = self.latency_model.get(pred.module, actual_ms)
+        self.latency_model[pred.module] = round(
+            old * (1 - PREDICTION_ALPHA) + actual_ms * PREDICTION_ALPHA, 2
         )
 
-        # Automaticity grows with samples and accuracy
-        target_auto = min(AUTOMATICITY_MAX,
-                         (model.samples / (model.samples + 15.0))
-                         * model.accuracy)
-        model.automaticity = round(
-            model.automaticity * 0.85 + target_auto * 0.15, 4
+        # Update success probability
+        key = f"{pred.module}:{pred.action}"
+        old_prob = self.outcome_model[key]
+        actual_val = 1.0 if actual_success else 0.0
+        self.outcome_model[key] = round(
+            old_prob * (1 - PREDICTION_ALPHA) + actual_val * PREDICTION_ALPHA, 3
         )
 
-        # Skill level
-        prev_level    = model.skill_level
-        model.skill_level = self._skill_level(model.samples, model.automaticity).value
-        model.last_updated= datetime.now().isoformat()
+        return timing_error
 
-        self.db.save_model(model)
-
-        # Log consolidation events
-        if prev_level != model.skill_level:
-            self.db.log_consolidation(
-                cycle, module, pattern,
-                prev_level, model.skill_level,
-                model.automaticity, model.samples
-            )
-
-        return model
-
-    def predict(self, module: str, pattern: str) -> Optional[tuple[float, float]]:
-        """
-        Returns (predicted_value, confidence) or None if insufficient data.
-        """
-        key = self._key(module, pattern)
-        if key not in self.models:
-            return None
-        m = self.models[key]
-        if m.samples < MIN_SAMPLES_TO_PREDICT:
-            return None
-        return m.predicted_val, m.accuracy
-
-    def _skill_level(self, samples: int, automaticity: float) -> SkillLevel:
-        if automaticity >= 0.85:              return SkillLevel.AUTOMATIC
-        if automaticity >= 0.65:              return SkillLevel.PROFICIENT
-        if automaticity >= 0.40:              return SkillLevel.COMPETENT
-        if samples >= 2:                      return SkillLevel.LEARNING
-        return SkillLevel.NAIVE
-
-    def best_models(self, n=5) -> list[ForwardModel]:
-        return sorted(
-            self.models.values(),
-            key=lambda m: m.automaticity, reverse=True
-        )[:n]
-
-    def total_automatic(self) -> int:
-        return sum(1 for m in self.models.values()
-                   if m.skill_level == SkillLevel.AUTOMATIC.value)
+    def get_prediction(self, pred_id: str) -> Optional[ForwardPrediction]:
+        return self.predictions.get(pred_id)
 
 
-# ─── Error Correction Engine ──────────────────────────────────────────────────
+# ─── Error Calculator ─────────────────────────────────────────────────────────
 
-class ErrorCorrectionEngine:
+class ErrorCalculator:
     """
-    Computes and applies real-time corrections to module outputs.
+    Computes the error signal — actual vs predicted.
+    This is the climbing fiber input to the Purkinje cells.
 
-    This models the cerebellar climbing fiber system:
-    the inferior olive sends error signals to Purkinje cells,
-    which then adjust their output to minimize future errors.
+    Error = actual - predicted
 
-    The correction has two components:
-      PREDICTIVE  — based on what the forward model says should happen
-      REACTIVE    — based on what actually happened vs what was predicted
-
-    Corrections are scaled by model accuracy:
-    a low-accuracy model applies small, tentative corrections.
-    A high-accuracy model applies confident, large corrections.
+    Types of error:
+      TIMING    → module was early or late
+      MAGNITUDE → response was too strong or too weak
+      SEQUENCE  → modules fired in wrong order
+      NONE      → prediction was accurate
     """
 
-    def __init__(self):
-        self.climbing_fiber_signal = 0.0   # current error signal strength
-        self.total_corrections     = 0
-        self.total_magnitude       = 0.0
+    def compute(self, pred: ForwardPrediction,
+                actual_ms: float, actual_success: bool,
+                actual_outcome: str, cycle: int) -> ErrorSignal:
 
-    def correct(self, module: str, raw_value: float,
-                model: Optional[ForwardModel],
-                cycle: int) -> tuple[float, CorrectionEvent]:
-        """
-        Apply cerebellar correction to raw module output.
-        Returns (corrected_value, correction_event).
-        """
-        if model is None or model.samples < MIN_SAMPLES_TO_PREDICT:
-            # No model yet — pass through unchanged
-            event = CorrectionEvent(
-                cycle           = cycle,
-                module          = module,
-                raw_value       = raw_value,
-                corrected_value = raw_value,
-                correction_delta= 0.0,
-                correction_type = CorrectionType.NONE.value,
-                pattern_key     = "",
-                model_accuracy  = 0.0
+        timing_error   = round(actual_ms - pred.predicted_latency_ms, 2)
+        outcome_error  = 0.0 if actual_success else 1.0
+        if not actual_success and pred.predicted_success_prob > 0.7:
+            outcome_error = pred.predicted_success_prob  # big surprise
+
+        # Determine error type
+        timing_pct = abs(timing_error) / max(pred.predicted_latency_ms, 1.0)
+        if timing_pct > 0.5:        error_type = ErrorType.TIMING
+        elif outcome_error > 0.5:   error_type = ErrorType.MAGNITUDE
+        else:                       error_type = ErrorType.NONE
+
+        magnitude = round(
+            timing_pct * 0.6 + outcome_error * 0.4, 4
+        )
+
+        # Build correction signal
+        correction = {}
+        if abs(timing_error) > 10.0:
+            correction["timing_adjust_ms"] = round(-timing_error * 0.3, 2)
+        if outcome_error > 0.3:
+            correction["confidence_penalty"] = round(-outcome_error * 0.2, 3)
+
+        sig = ErrorSignal(
+            prediction_id = pred.id,
+            module        = pred.module,
+            action        = pred.action,
+            error_type    = error_type.value,
+            timing_error  = timing_error,
+            outcome_error = outcome_error,
+            magnitude     = magnitude,
+            correction    = correction,
+            cycle         = cycle
+        )
+        return sig
+
+
+# ─── Purkinje Cell Layer ──────────────────────────────────────────────────────
+
+class PurkinjeCellLayer:
+    """
+    The learning layer of the cerebellum.
+
+    Purkinje cells receive two inputs:
+      1. Parallel fibers — context information (what's happening)
+      2. Climbing fibers — error signals (what went wrong)
+
+    When climbing fiber fires (error detected):
+      → LTD weakens the parallel fiber synapses that were active
+      → This is called Long-Term Depression
+      → The cell "unlearns" the bad prediction
+
+    When no error (success):
+      → LTP slightly strengthens active synapses
+      → Prediction gradually improves
+
+    This is the ONLY learning mechanism in the cerebellum.
+    Unlike the rest of the brain, it learns by subtraction.
+    """
+
+    def __init__(self, db: CerebellumDB):
+        self.db    = db
+        self.cells: dict[str, PurkinjeCell] = {}
+        self._seed_cells()
+
+    def _seed_cells(self):
+        """Initialize Purkinje cells for each known module."""
+        modules = ["temporal","salience","visual","limbic","neuromodulator",
+                   "amygdala","bridge","hippocampus","prefrontal","sensorimotor",
+                   "basal_ganglia","thalamus","dmn","swarm","orchestrator"]
+        for mod in modules:
+            cell_id = f"PC_{mod}"
+            cell    = PurkinjeCell(id=cell_id, module=mod, action="general")
+            self.cells[cell_id] = cell
+            self.db.save_purkinje(cell)
+
+    def apply_error(self, error: ErrorSignal) -> dict:
+        """Apply error signal via LTD — weaken bad synapses."""
+        cell_id = f"PC_{error.module}"
+        if cell_id not in self.cells:
+            cell = PurkinjeCell(id=cell_id, module=error.module, action=error.action)
+            self.cells[cell_id] = cell
+
+        cell = self.cells[cell_id]
+        old_weight = cell.synaptic_weight
+
+        if error.magnitude > 0.05:
+            # LTD — weaken by error magnitude
+            ltd_delta = LTD_RATE * error.magnitude
+            cell.synaptic_weight = round(
+                max(0.05, cell.synaptic_weight - ltd_delta), 4
             )
-            return raw_value, event
-
-        # Predictive correction
-        prediction = model.predicted_val
-        raw_error  = raw_value - prediction
-
-        # Scale correction by model confidence and cap at MAX_CORRECTION
-        correction_magnitude = abs(raw_error) * model.accuracy
-        correction_magnitude = min(MAX_CORRECTION, correction_magnitude)
-
-        # Don't correct tiny errors (deadband)
-        if correction_magnitude < CORRECTION_DEADBAND:
-            corrected = raw_value
-            delta     = 0.0
-            ctype     = CorrectionType.NONE
+            # Apply timing bias correction
+            cell.timing_bias = round(
+                cell.timing_bias - error.timing_error * 0.1, 2
+            )
+            cell.correction_count += 1
+            cell.error_history.append(error.magnitude)
         else:
-            # Pull raw value toward predicted
-            direction = -1 if raw_value > prediction else 1
-            delta     = round(direction * correction_magnitude, 5)
-            corrected = round(max(0.0, min(1.0, raw_value + delta)), 5)
+            # LTP — small strengthening on success
+            cell.synaptic_weight = round(
+                min(0.98, cell.synaptic_weight + LTP_RATE * 0.1), 4
+            )
+            cell.error_history.append(0.0)
 
-            if abs(delta) < 0.10:  ctype = CorrectionType.MINOR
-            elif abs(delta) < 0.25:ctype = CorrectionType.MODERATE
-            elif abs(delta) < MAX_CORRECTION: ctype = CorrectionType.SIGNIFICANT
-            else:                  ctype = CorrectionType.OVERRIDE
+        # Update learning phase
+        reliability = cell.reliability
+        if reliability > 0.90:   cell.learning_phase = LearningPhase.EXPERT.value
+        elif reliability > 0.75: cell.learning_phase = LearningPhase.REFINEMENT.value
+        elif reliability > 0.55: cell.learning_phase = LearningPhase.CONSOLIDATION.value
+        else:                    cell.learning_phase = LearningPhase.ACQUISITION.value
 
-        # Update climbing fiber signal
-        self.climbing_fiber_signal = round(
-            min(1.0, abs(raw_error) * (1.0 + model.accuracy)), 4
-        )
+        self.db.save_purkinje(cell)
 
-        if ctype != CorrectionType.NONE:
-            self.total_corrections  += 1
-            self.total_magnitude    += abs(delta)
+        return {
+            "cell":          cell_id,
+            "weight_before": round(old_weight, 4),
+            "weight_after":  round(cell.synaptic_weight, 4),
+            "delta":         round(cell.synaptic_weight - old_weight, 4),
+            "phase":         cell.learning_phase,
+            "reliability":   round(reliability, 3),
+        }
 
-        event = CorrectionEvent(
-            cycle            = cycle,
-            module           = module,
-            raw_value        = raw_value,
-            corrected_value  = corrected,
-            correction_delta = delta,
-            correction_type  = ctype.value,
-            pattern_key      = model.pattern_key,
-            model_accuracy   = model.accuracy
-        )
-        return corrected, event
+    def get_smoothing_weights(self) -> dict[str, float]:
+        """Get current synaptic weights for output smoothing."""
+        return {
+            cell.module: round(cell.synaptic_weight, 3)
+            for cell in self.cells.values()
+        }
 
-    def decay(self):
-        """Climbing fiber signal decays each cycle."""
-        self.climbing_fiber_signal = round(
-            max(0.0, self.climbing_fiber_signal - ERROR_SIGNAL_DECAY), 4
-        )
-
-    def average_correction(self) -> float:
-        if self.total_corrections == 0: return 0.0
-        return round(self.total_magnitude / self.total_corrections, 4)
+    def get_timing_biases(self) -> dict[str, float]:
+        """Get learned timing corrections per module."""
+        return {
+            cell.module: round(cell.timing_bias, 2)
+            for cell in self.cells.values()
+        }
 
 
 # ─── Timing Coordinator ───────────────────────────────────────────────────────
 
 class TimingCoordinator:
     """
-    Manages the timing of signals across modules.
+    Maintains the cognitive rhythm — ensures modules fire
+    in the correct temporal sequence.
 
-    The cerebellum's timing function:
-    It acts as a precise internal clock that coordinates
-    when different brain regions fire relative to each other.
+    Detects timing anomalies:
+      EARLY    — module fired before expected (may interrupt sequence)
+      LATE     — module fired after window (may cause cascade delay)
+      DYSMETRIC— severe timing violation (sequence coordination lost)
 
-    Mistimed signals — even if each is individually correct —
-    produce degraded output. The cerebellum ensures that
-    amygdala fear, prefrontal reasoning, and hippocampal
-    memory retrieval arrive in the right order.
-
-    In FORGE: tracks the processing latency of each module
-    and detects when modules are falling behind the rhythm.
+    Also maintains a rolling timing baseline per module.
     """
 
-    def __init__(self, db: CerebellumDB, window=TIMING_WINDOW):
-        self.db       = db
-        self.window   = window
-        self.module_times: dict[str, deque] = defaultdict(
-            lambda: deque(maxlen=window)
-        )
-        self.cycle_times: deque = deque(maxlen=window)
-        self.jitter_history: deque = deque(maxlen=window)
+    def __init__(self, db: CerebellumDB):
+        self.db      = db
+        self.history: dict[str, deque] = defaultdict(lambda: deque(maxlen=30))
+        self.baseline:dict[str, float] = {}
+        self.cycle   = 0
 
-    def record(self, module_latencies: dict[str, float], cycle: int) -> TimingEvent:
-        """
-        Record module latencies and assess timing state.
-        module_latencies: {module_name: latency_ms}
-        """
-        for module, latency in module_latencies.items():
-            self.module_times[module].append(latency)
+    def record(self, module: str, operation: str,
+               actual_ms: float, predicted_ms: float) -> TimingRecord:
+        self.cycle += 1
+        error_ms  = round(actual_ms - predicted_ms, 2)
+        error_pct = round(error_ms / max(predicted_ms, 1.0) * 100, 1)
 
-        # Compute jitter — coefficient of variation across modules
-        if module_latencies:
-            lats  = list(module_latencies.values())
-            mean  = sum(lats) / len(lats)
-            if mean > 0:
-                variance = sum((l - mean)**2 for l in lats) / len(lats)
-                jitter   = round(math.sqrt(variance) / mean, 4)
-            else:
-                jitter = 0.0
+        # Classify timing status
+        ratio = actual_ms / max(predicted_ms, 1.0)
+        if ratio > DYSMETRIA_SEVERE:
+            status = TimingStatus.DYSMETRIC
+        elif ratio > DYSMETRIA_MILD:
+            status = TimingStatus.LATE
+        elif ratio < (1.0 / DYSMETRIA_MILD):
+            status = TimingStatus.EARLY
         else:
-            jitter = 0.0
+            status = TimingStatus.PRECISE
 
-        self.jitter_history.append(jitter)
-
-        # Find late modules (> 2 standard deviations above mean)
-        modules_late = []
-        if len(module_latencies) >= 3:
-            lats = list(module_latencies.values())
-            mean = sum(lats) / len(lats)
-            std  = math.sqrt(sum((l-mean)**2 for l in lats) / len(lats))
-            modules_late = [
-                m for m, l in module_latencies.items()
-                if l > mean + 2 * std
-            ]
-
-        # Determine timing state
-        state = self._assess_state(jitter, modules_late)
-
-        event = TimingEvent(
-            cycle              = cycle,
-            state              = state.value,
-            jitter             = jitter,
-            modules_late       = modules_late,
-            correction_applied = len(modules_late) > 0
+        record = TimingRecord(
+            module      = module,
+            operation   = operation,
+            predicted_ms= round(predicted_ms, 2),
+            actual_ms   = round(actual_ms, 2),
+            error_ms    = error_ms,
+            error_pct   = error_pct,
+            status      = status.value,
+            cycle       = self.cycle
         )
-        self.db.save_timing(event)
-        return event
+        self.db.save_timing(record)
+        self.history[module].append(actual_ms)
 
-    def _assess_state(self, jitter: float,
-                      modules_late: list) -> TimingState:
-        if len(modules_late) >= 3:    return TimingState.DESYNCHRONIZED
-        if jitter > TIMING_JITTER_MAX:return TimingState.DYSRHYTHMIC
-        if jitter > TIMING_JITTER_MAX * 0.5: return TimingState.DRIFTING
-        return TimingState.SYNCHRONOUS
+        # Update rolling baseline
+        hist = list(self.history[module])
+        self.baseline[module] = round(sum(hist)/len(hist), 2)
 
-    def smoothness_score(self) -> float:
-        """Overall timing smoothness (1.0 = perfect)."""
-        if not self.jitter_history: return 1.0
-        avg_jitter = sum(self.jitter_history) / len(self.jitter_history)
-        return round(max(0.0, 1.0 - min(1.0, avg_jitter / TIMING_JITTER_MAX)), 4)
+        return record
+
+    def get_dysmetric_modules(self) -> list[str]:
+        """Modules with consistently poor timing."""
+        dysmetric = []
+        for module, hist in self.history.items():
+            if len(hist) < 3: continue
+            recent = list(hist)[-5:]
+            baseline = self.baseline.get(module, 50.0)
+            if any(ms > baseline * DYSMETRIA_MILD for ms in recent):
+                dysmetric.append(module)
+        return dysmetric
+
+    def pipeline_smoothness(self) -> float:
+        """0=chaotic, 1=perfectly smooth pipeline."""
+        if not self.baseline: return 1.0
+        variances = []
+        for module, hist in self.history.items():
+            if len(hist) < 3: continue
+            mean = self.baseline[module]
+            variance = sum((ms-mean)**2 for ms in hist) / len(hist)
+            normalized = min(1.0, variance / (mean**2 + 1))
+            variances.append(normalized)
+        if not variances: return 1.0
+        avg_variance = sum(variances) / len(variances)
+        return round(max(0.0, 1.0 - avg_variance), 3)
+
+    def rhythm_label(self, smoothness: float) -> str:
+        if smoothness > 0.85: return "STEADY"
+        if smoothness > 0.65: return "VARIABLE"
+        if smoothness > 0.40: return "IRREGULAR"
+        return "DYSRHYTHMIC"
 
 
-# ─── Skill Consolidator ───────────────────────────────────────────────────────
+# ─── Sequence Optimizer ───────────────────────────────────────────────────────
 
-class SkillConsolidator:
+class SequenceOptimizer:
     """
-    Compresses repeated patterns into automatic routines.
+    Learns and optimizes multi-module timing sequences.
+    Like a conductor learning the orchestra's rhythms —
+    over time the sequence becomes tighter and faster.
+    """
 
-    Biological analog: long-term depression (LTD) at parallel
-    fiber → Purkinje cell synapses. Repeated activation of a
-    pattern drives synaptic weakening in a precise way that
-    encodes the skill into the cerebellar microcircuit.
+    def __init__(self, db: CerebellumDB):
+        self.db       = db
+        self.sequences: dict[str, SequencePattern] = {}
+        self._seed_pipeline_sequence()
 
-    The result: what once required active attention becomes
-    automatic. The cortex is freed to think about something else.
+    def _seed_pipeline_sequence(self):
+        """Seed the main pipeline sequence."""
+        pipeline = SequencePattern(
+            id            = "SEQ_MAIN_PIPELINE",
+            name          = "main_cognitive_pipeline",
+            modules       = ["salience","temporal","bridge","limbic",
+                             "prefrontal","hippocampus","swarm","dmn"],
+            ideal_timings = [15.0, 25.0, 40.0, 30.0, 25.0, 120.0, 12.0, 5.0],
+        )
+        self.sequences[pipeline.id] = pipeline
+        self.db.save_sequence(pipeline)
 
-    In FORGE: tracks pattern repetition counts.
-    Once a pattern crosses SKILL_THRESHOLD:
-    - It gets a dedicated "routine" slot
-    - Future processing is faster (simulated)
-    - Error rate on that pattern drops further
+    def record_pipeline_run(self, module_timings: dict[str, float]):
+        """Record actual timing for a pipeline run."""
+        seq = self.sequences.get("SEQ_MAIN_PIPELINE")
+        if not seq: return
+
+        actual = [module_timings.get(m, 0.0) for m in seq.modules]
+        seq.actual_timings = actual
+
+        # Compare to ideal
+        errors = [abs(a-i)/max(i,1) for a,i in zip(actual, seq.ideal_timings) if i>0]
+        avg_error = sum(errors)/len(errors) if errors else 0
+
+        if avg_error < 0.25:
+            seq.success_count += 1
+        else:
+            seq.error_count += 1
+
+        # Mark as optimized when consistently good
+        if seq.success_count > 10 and seq.success_count > seq.error_count * 3:
+            seq.optimized = True
+
+        self.db.save_sequence(seq)
+
+    def timing_recommendations(self) -> dict[str, float]:
+        """Recommended timing adjustments based on learned sequences."""
+        seq = self.sequences.get("SEQ_MAIN_PIPELINE")
+        if not seq or not seq.actual_timings:
+            return {}
+
+        recommendations = {}
+        for module, ideal, actual in zip(
+            seq.modules, seq.ideal_timings, seq.actual_timings
+        ):
+            if actual > 0 and ideal > 0:
+                delta = ideal - actual  # positive = need to be faster
+                recommendations[module] = round(delta * 0.2, 2)  # gentle nudge
+
+        return recommendations
+
+
+# ─── Adaptive Filter ──────────────────────────────────────────────────────────
+
+class AdaptiveFilter:
+    """
+    Smooths out noisy pipeline behavior.
+    Uses Purkinje cell weights to weight module outputs —
+    more reliable modules get higher gain.
+
+    Also applies the timing corrections from the forward model
+    to predict when each module should fire next.
+    """
+
+    def apply(self, module_outputs: dict,
+              purkinje_weights: dict,
+              timing_corrections: dict) -> dict:
+        """
+        Apply cerebellar smoothing to module outputs.
+        Returns adjusted outputs.
+        """
+        adjusted = {}
+        for module, output in module_outputs.items():
+            weight     = purkinje_weights.get(module, 0.7)
+            correction = timing_corrections.get(module, 0.0)
+
+            # Scale confidence by Purkinje weight
+            if isinstance(output, dict):
+                adjusted_output = dict(output)
+                # Apply weight to any confidence/score fields
+                for key in ["confidence","score","strength","probability"]:
+                    if key in adjusted_output and isinstance(adjusted_output[key], (int,float)):
+                        adjusted_output[key] = round(
+                            adjusted_output[key] * weight, 4
+                        )
+                adjusted_output["_cerebellum_weight"]     = weight
+                adjusted_output["_timing_correction_ms"]  = correction
+                adjusted[module] = adjusted_output
+            else:
+                adjusted[module] = output
+
+        return adjusted
+
+
+# ─── Olive Input (Error Broadcaster) ─────────────────────────────────────────
+
+class OliveInput:
+    """
+    Models the inferior olive — the brain structure that
+    broadcasts error signals to the entire cerebellum.
+
+    In the real brain, olive firing is rare (~1Hz) and each
+    spike represents a significant prediction error.
+
+    In FORGE, the olive fires when:
+      - A module's timing error exceeds threshold
+      - An action's outcome was unexpected
+      - The pipeline sequence breaks
     """
 
     def __init__(self):
-        self.pattern_counts: dict[str, int] = defaultdict(int)
-        self.routines: dict[str, dict]      = {}  # consolidated skills
-        self.total_consolidated             = 0
+        self.olive_fires:  deque = deque(maxlen=100)
+        self.total_fires   = 0
+        self.last_fire_ms  = 0.0
 
-    def observe(self, pattern: str, module: str,
-                model: Optional[ForwardModel]) -> Optional[dict]:
-        """
-        Observe a pattern occurrence. Returns consolidation event
-        if threshold reached.
-        """
-        self.pattern_counts[pattern] += 1
-        count = self.pattern_counts[pattern]
+    def should_fire(self, error: ErrorSignal) -> bool:
+        """Does this error warrant an olive signal?"""
+        return error.magnitude > 0.15
 
-        if count >= SKILL_THRESHOLD and pattern not in self.routines:
-            # Consolidate into routine
-            routine = {
-                "pattern":       pattern,
-                "module":        module,
-                "consolidated_at": count,
-                "speed_bonus":   round(min(0.40, (count - SKILL_THRESHOLD) * 0.02 + 0.10), 4),
-                "error_reduction": round(min(0.50, count * 0.03), 4),
-                "automaticity":  model.automaticity if model else 0.5,
-                "created":       datetime.now().isoformat()
-            }
-            self.routines[pattern] = routine
-            self.total_consolidated += 1
-            return routine
-
-        return None
-
-    def get_routine(self, pattern: str) -> Optional[dict]:
-        return self.routines.get(pattern)
-
-    def speed_bonus(self, pattern: str) -> float:
-        r = self.routines.get(pattern)
-        return r["speed_bonus"] if r else 0.0
-
-    def error_reduction(self, pattern: str) -> float:
-        r = self.routines.get(pattern)
-        return r["error_reduction"] if r else 0.0
-
-    def top_routines(self, n=5) -> list[dict]:
-        return sorted(
-            self.routines.values(),
-            key=lambda r: r["automaticity"], reverse=True
-        )[:n]
-
-
-# ─── Cerebellar Predictor ─────────────────────────────────────────────────────
-
-class CerebellarPredictor:
-    """
-    Generates pre-movement predictions.
-
-    The cerebellum's most remarkable property:
-    it predicts the sensory consequences of an action
-    BEFORE the action occurs.
-
-    This allows it to generate a "corollary discharge" —
-    a copy of the expected sensation — which is subtracted
-    from the actual sensation. If they match: ignore.
-    If they don't match: something unexpected happened.
-
-    In FORGE: before a module generates output, the cerebellum
-    generates a prediction of what that output will be.
-    The difference between prediction and actual becomes
-    the primary learning signal.
-    """
-
-    def __init__(self, library: ForwardModelLibrary):
-        self.library       = library
-        self.predictions:  dict[str, tuple[float, float]] = {}
-        self.total_hits    = 0
-        self.total_misses  = 0
-        self.total_predictions = 0
-
-    def predict_ahead(self, module: str,
-                      pattern: str) -> Optional[tuple[float, float]]:
-        """
-        Generate a prediction before the module acts.
-        Returns (predicted_value, confidence) or None.
-        """
-        result = self.library.predict(module, pattern)
-        if result:
-            self.predictions[f"{module}::{pattern}"] = result
-            self.total_predictions += 1
-        return result
-
-    def evaluate(self, module: str, pattern: str,
-                 actual: float) -> tuple[float, bool]:
-        """
-        Compare prediction to actual.
-        Returns (prediction_error, was_predicted).
-        """
-        key = f"{module}::{pattern}"
-        pred = self.predictions.pop(key, None)
-        if pred is None:
-            return 0.0, False
-
-        predicted_val, _ = pred
-        error = abs(actual - predicted_val)
-        threshold = 0.15
-
-        if error < threshold:
-            self.total_hits += 1
-        else:
-            self.total_misses += 1
-
-        return round(error, 4), True
-
-    def hit_rate(self) -> float:
-        total = self.total_hits + self.total_misses
-        if total == 0: return 0.0
-        return round(self.total_hits / total, 4)
+    def fire(self, error: ErrorSignal) -> dict:
+        """Broadcast error signal to cerebellum."""
+        self.total_fires += 1
+        self.last_fire_ms = error.timing_error
+        event = {
+            "fire_count": self.total_fires,
+            "module":     error.module,
+            "error_type": error.error_type,
+            "magnitude":  error.magnitude,
+            "timestamp":  datetime.now().isoformat()
+        }
+        self.olive_fires.append(event)
+        return event
 
 
 # ─── FORGE Cerebellum ─────────────────────────────────────────────────────────
 
 class ForgeCerebellum:
     def __init__(self):
-        self.db          = CerebellumDB()
-        self.library     = ForwardModelLibrary(self.db)
-        self.corrector   = ErrorCorrectionEngine()
-        self.timing      = TimingCoordinator(self.db)
-        self.consolidator= SkillConsolidator()
-        self.predictor   = CerebellarPredictor(self.library)
-        self.cycle       = 0
+        self.db           = CerebellumDB()
+        self.forward_model= ForwardModel(self.db)
+        self.error_calc   = ErrorCalculator()
+        self.purkinje     = PurkinjeCellLayer(self.db)
+        self.timing       = TimingCoordinator(self.db)
+        self.optimizer    = SequenceOptimizer(self.db)
+        self.filter       = AdaptiveFilter()
+        self.olive        = OliveInput()
+        self.cycle        = 0
+        self.total_errors = 0
+        self.total_corrections = 0
+        self.pending_predictions: dict[str, ForwardPrediction] = {}
 
-        self.total_corrections    = 0
-        self.total_consolidations = 0
-        self.total_dysrhythmias   = 0
-
-    def process(self, signal: dict,
-                module_outputs: Optional[dict] = None) -> dict:
+    def before_action(self, module: str, action: str,
+                      context: dict) -> dict:
         """
-        Full cerebellum processing pipeline.
-
-        signal:         raw input (for context / timing data)
-        module_outputs: dict of {module: {"value": float, "latency_ms": float, ...}}
-
-        Returns cerebellar corrections, timing assessment,
-        skill levels, and smoothed outputs.
+        Called BEFORE a module fires.
+        Makes a forward prediction.
         """
-        t0             = time.time()
-        self.cycle    += 1
-        module_outputs = module_outputs or {}
-
-        # Extract context pattern for this signal
-        pattern = self._extract_pattern(signal)
-
-        # 1. Decay climbing fiber signal
-        self.corrector.decay()
-
-        # 2. Process each module — update models and apply corrections
-        corrections    = {}
-        skill_updates  = []
-        new_routines   = []
-        module_latencies = {}
-
-        for module, mout in module_outputs.items():
-            raw_val  = mout.get("value", 0.5)
-            latency  = mout.get("latency_ms", 20.0)
-            module_latencies[module] = latency
-
-            # Generate prediction before seeing actual
-            self.predictor.predict_ahead(module, pattern)
-
-            # Update forward model with actual value
-            model = self.library.update(module, pattern, raw_val, self.cycle)
-
-            # Evaluate prediction accuracy
-            pred_error, was_predicted = self.predictor.evaluate(
-                module, pattern, raw_val
-            )
-
-            # Apply correction
-            corrected, corr_event = self.corrector.correct(
-                module, raw_val, model, self.cycle
-            )
-
-            if corr_event.correction_type != CorrectionType.NONE.value:
-                self.db.save_correction(corr_event)
-                self.total_corrections += 1
-
-            # Check skill consolidation
-            routine = self.consolidator.observe(pattern, module, model)
-            if routine:
-                new_routines.append(routine)
-                self.total_consolidations += 1
-
-            corrections[module] = {
-                "raw":          raw_val,
-                "corrected":    corrected,
-                "delta":        corr_event.correction_delta,
-                "type":         corr_event.correction_type,
-                "skill_level":  model.skill_level,
-                "automaticity": model.automaticity,
-                "accuracy":     model.accuracy,
-                "samples":      model.samples,
-                "pred_error":   pred_error,
-                "speed_bonus":  self.consolidator.speed_bonus(pattern),
-            }
-            skill_updates.append({
-                "module":  module,
-                "skill":   model.skill_level,
-                "auto":    model.automaticity,
-                "samples": model.samples,
-            })
-
-        # 3. Timing coordination
-        timing_event = self.timing.record(module_latencies, self.cycle)
-        if timing_event.state in [
-            TimingState.DYSRHYTHMIC.value,
-            TimingState.DESYNCHRONIZED.value
-        ]:
-            self.total_dysrhythmias += 1
-
-        # 4. Overall smoothness
-        smoothness = self._compute_smoothness(corrections)
-
-        elapsed = (time.time() - t0) * 1000
+        self.cycle += 1
+        pred = self.forward_model.predict(module, action, context, self.cycle)
+        self.pending_predictions[module] = pred
 
         return {
-            "cycle":               self.cycle,
-            "pattern":             pattern,
-            "corrections":         corrections,
-            "timing_state":        timing_event.state,
-            "timing_jitter":       timing_event.jitter,
-            "modules_late":        timing_event.modules_late,
-            "smoothness":          smoothness,
-            "climbing_fiber":      self.corrector.climbing_fiber_signal,
-            "prediction_hit_rate": self.predictor.hit_rate(),
-            "new_routines":        new_routines,
-            "total_models":        len(self.library.models),
-            "total_automatic":     self.library.total_automatic(),
-            "total_corrections":   self.total_corrections,
-            "total_consolidations":self.total_consolidations,
-            "total_dysrhythmias":  self.total_dysrhythmias,
-            "processing_ms":       round(elapsed, 2),
+            "prediction_id":        pred.id,
+            "predicted_latency_ms": pred.predicted_latency_ms,
+            "predicted_success":    pred.predicted_outcome,
+            "timing_bias":          self.purkinje.get_timing_biases().get(module, 0.0),
         }
 
-    def _extract_pattern(self, signal: dict) -> str:
+    def after_action(self, module: str, actual_ms: float,
+                     success: bool = True,
+                     actual_outcome: str = "success") -> dict:
         """
-        Extract a compact context key for the forward model.
-        Groups similar contexts together for faster generalization.
+        Called AFTER a module fires.
+        Computes error, applies LTD, sends olive signal if needed.
         """
-        threat  = signal.get("threat", 0)
-        anomaly = int(signal.get("anomaly", False))
-        social  = signal.get("social", {}) or {}
-        intent  = social.get("inferred_intent", "neutral")[:8]
-        # Bin continuous values for generalization
-        t_bin   = threat
-        return f"T{t_bin}A{anomaly}I{intent}"
+        pred = self.pending_predictions.pop(module, None)
+        if not pred:
+            # No prediction exists — record timing only
+            rec = self.timing.record(module, "unknown", actual_ms,
+                                     self.forward_model.latency_model.get(module, actual_ms))
+            return {"module": module, "status": rec.status, "correction": {}}
 
-    def _compute_smoothness(self, corrections: dict) -> float:
+        # Update forward model
+        timing_error = self.forward_model.update(pred, actual_ms, success)
+
+        # Record timing
+        rec = self.timing.record(module, pred.action, actual_ms,
+                                  pred.predicted_latency_ms)
+
+        # Compute error signal
+        error = self.error_calc.compute(pred, actual_ms, success,
+                                         actual_outcome, self.cycle)
+        self.db.save_error(error)
+
+        # Apply Purkinje LTD/LTP
+        purkinje_result = self.purkinje.apply_error(error)
+
+        # Olive fires on significant error
+        olive_event = None
+        if self.olive.should_fire(error):
+            olive_event = self.olive.fire(error)
+            self.total_errors += 1
+
+        if error.correction:
+            self.total_corrections += 1
+
+        return {
+            "module":          module,
+            "actual_ms":       actual_ms,
+            "predicted_ms":    pred.predicted_latency_ms,
+            "timing_error_ms": error.timing_error,
+            "timing_status":   rec.status,
+            "error_type":      error.error_type,
+            "magnitude":       error.magnitude,
+            "correction":      error.correction,
+            "purkinje":        purkinje_result,
+            "olive_fired":     olive_event is not None,
+        }
+
+    def observe_pipeline(self, module_timings: dict[str, float],
+                         success: bool = True) -> CerebellarOutput:
         """
-        Overall smoothness score across all module corrections.
-        1.0 = no corrections needed (fully automatic).
+        Observe a full pipeline run.
+        Records sequence timing, computes smoothness, emits corrections.
         """
-        if not corrections: return 0.5
-        auto_scores = [c["automaticity"] for c in corrections.values()]
-        return round(sum(auto_scores) / len(auto_scores), 4)
+        # Record sequence
+        self.optimizer.record_pipeline_run(module_timings)
+
+        # Get smoothness
+        smoothness = self.timing.pipeline_smoothness()
+        dysmetric  = self.timing.get_dysmetric_modules()
+
+        # Get corrections from optimizer
+        timing_corrections = self.optimizer.timing_recommendations()
+
+        # Get smoothing weights from Purkinje cells
+        smoothing_weights = self.purkinje.get_smoothing_weights()
+
+        output = CerebellarOutput(
+            cycle               = self.cycle,
+            timing_corrections  = timing_corrections,
+            smoothing_weights   = smoothing_weights,
+            dysmetric_modules   = dysmetric,
+            overall_smoothness  = smoothness,
+            pipeline_rhythm     = self.timing.rhythm_label(smoothness)
+        )
+        return output
 
     def get_status(self) -> dict:
-        best = self.library.best_models(5)
+        cells = list(self.purkinje.cells.values())
         return {
-            "version":             VERSION,
-            "cycle":               self.cycle,
-            "total_models":        len(self.library.models),
-            "total_automatic":     self.library.total_automatic(),
-            "total_corrections":   self.total_corrections,
-            "total_consolidations":self.total_consolidations,
-            "total_dysrhythmias":  self.total_dysrhythmias,
-            "prediction_hit_rate": self.predictor.hit_rate(),
-            "smoothness":          self.timing.smoothness_score(),
-            "climbing_fiber":      self.corrector.climbing_fiber_signal,
-            "avg_correction":      self.corrector.average_correction(),
-            "top_skills":          [
-                {
-                    "module":      m.module,
-                    "pattern":     m.pattern_key,
-                    "skill":       m.skill_level,
-                    "automaticity":m.automaticity,
-                    "samples":     m.samples,
-                    "accuracy":    m.accuracy,
-                }
-                for m in best
-            ],
-            "top_routines": self.consolidator.top_routines(3),
+            "version":           VERSION,
+            "cycle":             self.cycle,
+            "total_errors":      self.total_errors,
+            "total_corrections": self.total_corrections,
+            "olive_fires":       self.olive.total_fires,
+            "pipeline_smoothness": self.timing.pipeline_smoothness(),
+            "pipeline_rhythm":   self.timing.rhythm_label(
+                self.timing.pipeline_smoothness()
+            ),
+            "dysmetric_modules": self.timing.get_dysmetric_modules(),
+            "purkinje_summary": {
+                "total_cells":   len(cells),
+                "avg_weight":    round(sum(c.synaptic_weight for c in cells)/max(len(cells),1), 3),
+                "expert_cells":  sum(1 for c in cells if c.learning_phase == "EXPERT"),
+            },
+            "forward_model": {
+                "modules_tracked": len(self.forward_model.latency_model),
+                "top_latencies":   dict(sorted(
+                    self.forward_model.latency_model.items(),
+                    key=lambda x: x[1], reverse=True
+                )[:5])
+            }
         }
 
 
 # ─── Rich UI ──────────────────────────────────────────────────────────────────
 
-SKILL_COLORS = {
-    "NAIVE":      "dim",
-    "LEARNING":   "blue",
-    "COMPETENT":  "cyan",
-    "PROFICIENT": "green",
-    "AUTOMATIC":  "bright_green",
+STATUS_COLORS = {
+    "PRECISE":   "green",
+    "EARLY":     "cyan",
+    "LATE":      "yellow",
+    "DYSMETRIC": "bright_red",
 }
 
-TIMING_COLORS = {
-    "SYNCHRONOUS":    "green",
-    "DRIFTING":       "yellow",
-    "DYSRHYTHMIC":    "red",
-    "DESYNCHRONIZED": "bright_red",
+PHASE_COLORS = {
+    "ACQUISITION":   "dim",
+    "CONSOLIDATION": "yellow",
+    "REFINEMENT":    "cyan",
+    "EXPERT":        "bright_green",
 }
 
-CORRECTION_COLORS = {
-    "NONE":        "dim",
-    "MINOR":       "blue",
-    "MODERATE":    "yellow",
-    "SIGNIFICANT": "red",
-    "OVERRIDE":    "bright_red",
-}
-
-def render_cerebellum(result: dict, idx: int):
+def render_cerebellum(pipeline_result: dict,
+                      output: CerebellarOutput,
+                      idx: int):
     if not HAS_RICH: return
 
-    smoothness = result["smoothness"]
-    sc         = "bright_green" if smoothness > 0.7 else "green" if smoothness > 0.4 else "yellow"
-    timing     = result["timing_state"]
-    tc         = TIMING_COLORS.get(timing, "white")
-    hit_rate   = result["prediction_hit_rate"]
-    cf         = result["climbing_fiber"]
+    smoothness = output.overall_smoothness
+    rhythm     = output.pipeline_rhythm
+    rc = {"STEADY":"green","VARIABLE":"yellow",
+          "IRREGULAR":"orange3","DYSRHYTHMIC":"bright_red"}.get(rhythm,"white")
 
     console.print(Rule(
-        f"[bold cyan]⬡ CEREBELLUM[/bold cyan]  "
+        f"[bold cyan]⬡ FORGE CEREBELLUM[/bold cyan]  "
         f"[dim]#{idx}[/dim]  "
-        f"[{sc}]smooth={smoothness:.3f}[/{sc}]  "
-        f"[{tc}]{timing}[/{tc}]  "
-        f"[dim]hit={hit_rate:.2f}  cf={cf:.3f}[/dim]"
+        f"[{rc}]{rhythm}[/{rc}]  "
+        f"smoothness={smoothness:.3f}"
     ))
 
-    if timing in ["DYSRHYTHMIC", "DESYNCHRONIZED"]:
-        console.print(Panel(
-            f"[bold red]⚡ TIMING ALARM — {timing}[/bold red]\n"
-            f"Jitter: {result['timing_jitter']:.3f}  "
-            f"Late modules: {', '.join(result['modules_late']) or 'none'}\n"
-            f"[dim]Timing correction applied.[/dim]",
-            border_style="red"
-        ))
+    # Module timing table
+    timing_table = Table(box=box.SIMPLE, show_header=True, expand=True)
+    timing_table.add_column("Module",    style="dim", width=14)
+    timing_table.add_column("Actual",    justify="right", width=8)
+    timing_table.add_column("Predicted", justify="right", width=10)
+    timing_table.add_column("Error",     justify="right", width=8)
+    timing_table.add_column("Status",    width=12)
+    timing_table.add_column("Purkinje",  justify="right", width=10)
 
-    if result["new_routines"]:
-        for r in result["new_routines"]:
-            console.print(Panel(
-                f"[bold bright_green]★ SKILL CONSOLIDATED — {r['module']}[/bold bright_green]\n"
-                f"Pattern: {r['pattern']}  "
-                f"Speed bonus: +{r['speed_bonus']:.2f}  "
-                f"Error reduction: -{r['error_reduction']:.2f}",
-                border_style="bright_green"
-            ))
+    for mod, data in pipeline_result.items():
+        if not isinstance(data, dict): continue
+        act   = data.get("actual_ms", 0)
+        pred  = data.get("predicted_ms", 0)
+        err   = data.get("timing_error_ms", 0)
+        stat  = data.get("timing_status", "PRECISE")
+        sc    = STATUS_COLORS.get(stat, "white")
+        pur   = data.get("purkinje",{}).get("weight_after", 0.5) if data.get("purkinje") else 0.5
+        pc    = "bright_green" if pur>0.8 else "green" if pur>0.6 else "yellow" if pur>0.4 else "red"
 
-    def bar(v, w=10):
-        return "█" * int(v * w) + "░" * (w - int(v * w))
-
-    # Module corrections table
-    corr_lines = []
-    for mod, c in result["corrections"].items():
-        skill = c["skill_level"]
-        skc   = SKILL_COLORS.get(skill, "white")
-        ct    = c["type"]
-        ctc   = CORRECTION_COLORS.get(ct, "dim")
-        auto  = c["automaticity"]
-        delta = c["delta"]
-        sign  = "+" if delta >= 0 else ""
-        corr_lines.append(
-            f"  [{skc}]{mod:<14}[/{skc}]  "
-            f"[{ctc}]{ct:<11}[/{ctc}]  "
-            f"[dim]{c['raw']:.3f}→{c['corrected']:.3f}[/dim]  "
-            f"[dim]({sign}{delta:.3f})[/dim]  "
-            f"[{skc}]{skill:<10}[/{skc}]  "
-            f"[dim]auto={auto:.3f} acc={c['accuracy']:.3f}[/dim]"
+        timing_table.add_row(
+            mod,
+            f"{act:.1f}ms",
+            f"{pred:.1f}ms",
+            f"[{sc}]{err:+.1f}[/{sc}]",
+            f"[{sc}]{stat}[/{sc}]",
+            f"[{pc}]{pur:.3f}[/{pc}]"
         )
 
-    left_lines = [
-        f"[bold]Smoothness:[/bold]  [{sc}]{bar(smoothness)} {smoothness:.3f}[/{sc}]",
-        f"[bold]Hit rate:  [/bold]  {bar(hit_rate)} {hit_rate:.3f}",
-        f"[bold]Climb.fiber:[/bold] [magenta]{bar(cf)} {cf:.3f}[/magenta]",
-        f"[bold]Timing:     [/bold] [{tc}]{timing}[/{tc}]  jitter={result['timing_jitter']:.3f}",
-        f"",
-        f"[bold]Total models:[/bold]     {result['total_models']}",
-        f"[bold]Automatic:[/bold]        {result['total_automatic']}",
-        f"[bold]Corrections:[/bold]      {result['total_corrections']}",
-        f"[bold]Consolidations:[/bold]   {result['total_consolidations']}",
-        f"[bold]Pattern:[/bold]          [dim]{result['pattern']}[/dim]",
-    ]
-
-    right_lines = ["[bold]Module Corrections:[/bold]"] + corr_lines \
-        if corr_lines else ["[dim]No modules this cycle[/dim]"]
+    # Corrections panel
+    corr_lines = []
+    if output.timing_corrections:
+        corr_lines.append("[bold]Timing recommendations:[/bold]")
+        for mod, delta in output.timing_corrections.items():
+            color = "green" if delta > 0 else "red"
+            corr_lines.append(
+                f"  {mod:<14} [{color}]{delta:+.1f}ms[/{color}]"
+            )
+    if output.dysmetric_modules:
+        corr_lines.append(f"\n[bold red]Dysmetric:[/bold red]")
+        for m in output.dysmetric_modules:
+            corr_lines.append(f"  [red]⚠ {m}[/red]")
+    if not corr_lines:
+        corr_lines = ["[dim]All modules in rhythm ✓[/dim]"]
 
     console.print(Columns([
-        Panel("\n".join(left_lines),  title="[bold cyan]Cerebellar State[/bold cyan]", border_style="cyan"),
-        Panel("\n".join(right_lines), title="[bold]Module Skill + Corrections[/bold]", border_style="dim")
+        Panel(timing_table, title="[bold]Module Timing[/bold]", border_style="dim"),
+        Panel("\n".join(corr_lines), title="[bold]Corrections[/bold]", border_style=rc)
     ]))
 
 
@@ -1006,118 +1059,148 @@ def run_demo():
     if HAS_RICH:
         console.print(Panel.fit(
             "[bold cyan]FORGE CEREBELLUM[/bold cyan]\n"
-            "[dim]Forward Models · Error Correction · Timing · Skill Consolidation[/dim]\n"
-            f"[dim]Version {VERSION}  |  Port {API_PORT}[/dim]",
+            "[dim]Timing · Error Correction · Forward Model · Purkinje Learning[/dim]\n"
+            f"[dim]Version {VERSION}[/dim]",
             border_style="cyan"
         ))
 
-    cb = ForgeCerebellum()
+    cerebellum = ForgeCerebellum()
 
-    # A learning arc: same context repeated many times,
-    # watching the system go from NAIVE → AUTOMATIC
-    base_mods = {
-        "amygdala":    {"value": 0.20, "latency_ms": 8.0},
-        "prefrontal":  {"value": 0.75, "latency_ms": 42.0},
-        "hippocampus": {"value": 0.60, "latency_ms": 35.0},
-        "thalamus":    {"value": 0.50, "latency_ms": 12.0},
-    }
+    # Simulate several pipeline runs with realistic timing data
+    # Watch the cerebellum learn and smooth the pipeline over time
 
-    scenarios = [
-        # First encounters — NAIVE models, no corrections
-        ({"threat":0,"anomaly":False,"social":{"inferred_intent":"cooperative"}},
-         base_mods, "First encounter — building forward models"),
-
-        ({"threat":0,"anomaly":False,"social":{"inferred_intent":"cooperative"}},
-         {k:{**v,"value":v["value"]+0.03} for k,v in base_mods.items()},
-         "Second encounter — models updating"),
-
-        ({"threat":0,"anomaly":False,"social":{"inferred_intent":"cooperative"}},
-         {k:{**v,"value":v["value"]+0.01} for k,v in base_mods.items()},
-         "Third encounter — corrections begin"),
-
-        # Repeated practice — models get accurate
-        *[({"threat":0,"anomaly":False,"social":{"inferred_intent":"cooperative"}},
-           {k:{**v,"value":v["value"]+ (i-4)*0.01} for k,v in base_mods.items()},
-           f"Practice cycle {i-2} — automaticity growing")
-          for i in range(4, 10)],
-
-        # Timing disruption
-        ({"threat":1,"anomaly":True,"social":{"inferred_intent":"ambiguous"}},
-         {"amygdala":   {"value":0.65,"latency_ms":9.0},
-          "prefrontal": {"value":0.55,"latency_ms":120.0},  # late!
-          "hippocampus":{"value":0.50,"latency_ms":38.0},
-          "thalamus":   {"value":0.45,"latency_ms":14.0}},
-         "Timing disruption — prefrontal late"),
-
-        # Novel threatening pattern — back to learning
-        ({"threat":3,"anomaly":True,"social":{"inferred_intent":"intrusion"}},
-         {"amygdala":   {"value":0.85,"latency_ms":8.0},
-          "prefrontal": {"value":0.30,"latency_ms":55.0},
-          "salience":   {"value":0.80,"latency_ms":18.0},
-          "thalamus":   {"value":0.70,"latency_ms":11.0}},
-         "Novel threat pattern — new models needed"),
-
-        # Recovery to familiar pattern
-        ({"threat":0,"anomaly":False,"social":{"inferred_intent":"cooperative"}},
-         base_mods,
-         "Back to familiar — automaticity kicks in"),
+    pipeline_scenarios = [
+        # Run 1 — first time, timing is rough
+        {
+            "label": "First run — rough timing",
+            "timings": {
+                "salience":     18.0,   # a bit slow
+                "temporal":     31.0,   # slow
+                "bridge":       52.0,   # very slow
+                "limbic":       28.0,   # ok
+                "prefrontal":   89.0,   # way too slow (dysmetric)
+                "hippocampus": 145.0,   # normal for hippocampus
+                "swarm":        15.0,   # fast
+                "dmn":           6.0,   # ok
+            },
+            "success": True
+        },
+        # Run 2 — cerebellum starts correcting
+        {
+            "label": "Second run — correction begins",
+            "timings": {
+                "salience":     16.0,
+                "temporal":     28.0,
+                "bridge":       45.0,
+                "limbic":       27.0,
+                "prefrontal":   60.0,   # improved
+                "hippocampus": 138.0,
+                "swarm":        13.0,
+                "dmn":           5.5,
+            },
+            "success": True
+        },
+        # Run 3 — crisis signal, timing changes
+        {
+            "label": "Crisis — timing shifts under threat",
+            "timings": {
+                "salience":      9.0,   # faster (threat)
+                "temporal":     22.0,
+                "bridge":       38.0,
+                "limbic":       18.0,   # emotion speeds up
+                "prefrontal":   42.0,
+                "hippocampus": 155.0,   # memory encoding stronger
+                "swarm":         8.0,   # swarm on alert
+                "dmn":           2.0,   # DMN suppressed
+            },
+            "success": True
+        },
+        # Run 4 — recovery, smoothing
+        {
+            "label": "Recovery — smoothing in",
+            "timings": {
+                "salience":     14.0,
+                "temporal":     25.0,
+                "bridge":       41.0,
+                "limbic":       26.0,
+                "prefrontal":   28.0,   # much better
+                "hippocampus": 122.0,
+                "swarm":        11.0,
+                "dmn":           5.0,
+            },
+            "success": True
+        },
+        # Run 5 — approaching steady state
+        {
+            "label": "Steady state — cerebellum optimized",
+            "timings": {
+                "salience":     14.5,
+                "temporal":     24.5,
+                "bridge":       40.5,
+                "limbic":       25.5,
+                "prefrontal":   25.5,
+                "hippocampus": 120.5,
+                "swarm":        11.5,
+                "dmn":           5.0,
+            },
+            "success": True
+        },
     ]
 
-    for i, (sig, mods, label) in enumerate(scenarios):
+    for i, scenario in enumerate(pipeline_scenarios):
         if HAS_RICH:
-            console.print(f"\n[bold dim]━━━ {i+1}: {label.upper()} ━━━[/bold dim]")
-        result = cb.process(sig, mods)
-        render_cerebellum(result, i+1)
-        time.sleep(0.05)
+            console.print(f"\n[bold dim]━━━ RUN {i+1}: {scenario['label'].upper()} ━━━[/bold dim]")
+
+        timings = scenario["timings"]
+        pipeline_result = {}
+
+        # Before each module
+        for mod in timings:
+            cerebellum.before_action(mod, "process", {"threat": 3 if i==2 else 0})
+
+        # After each module
+        for mod, actual_ms in timings.items():
+            result = cerebellum.after_action(
+                mod, actual_ms, scenario["success"]
+            )
+            pipeline_result[mod] = result
+
+        # Observe full pipeline
+        output = cerebellum.observe_pipeline(timings, scenario["success"])
+        render_cerebellum(pipeline_result, output, i+1)
+        time.sleep(0.1)
 
     # Final status
     if HAS_RICH:
         console.print(Rule("[bold cyan]⬡ CEREBELLUM FINAL STATUS[/bold cyan]"))
-        status = cb.get_status()
+        status = cerebellum.get_status()
 
         st = Table(box=box.DOUBLE_EDGE, border_style="cyan", title="Cerebellum Status")
-        st.add_column("Metric",  style="cyan")
-        st.add_column("Value",   style="white")
+        st.add_column("Metric", style="cyan")
+        st.add_column("Value",  style="white")
         st.add_row("Cycles",            str(status["cycle"]))
-        st.add_row("Forward Models",    str(status["total_models"]))
-        st.add_row("Automatic Skills",  str(status["total_automatic"]))
-        st.add_row("Total Corrections", str(status["total_corrections"]))
-        st.add_row("Consolidations",    str(status["total_consolidations"]))
-        st.add_row("Dysrhythmias",      str(status["total_dysrhythmias"]))
-        st.add_row("Prediction Hit Rate",f"{status['prediction_hit_rate']:.3f}")
-        st.add_row("Timing Smoothness", f"{status['smoothness']:.3f}")
-        st.add_row("Avg Correction",    f"{status['avg_correction']:.4f}")
+        st.add_row("Total Errors",      str(status["total_errors"]))
+        st.add_row("Corrections Made",  str(status["total_corrections"]))
+        st.add_row("Olive Fires",       str(status["olive_fires"]))
+        st.add_row("Pipeline Smoothness",f"{status['pipeline_smoothness']:.3f}")
+        st.add_row("Pipeline Rhythm",   status["pipeline_rhythm"])
+        st.add_row("Dysmetric Modules", str(status["dysmetric_modules"] or "none"))
+        st.add_row("Expert Cells",      str(status["purkinje_summary"]["expert_cells"]))
+        st.add_row("Avg Purkinje Weight",f"{status['purkinje_summary']['avg_weight']:.3f}")
         console.print(st)
 
-        if status["top_skills"]:
-            sk = Table(box=box.SIMPLE, title="Top Skill Models", title_style="green")
-            sk.add_column("Module",   style="cyan")
-            sk.add_column("Pattern",  style="dim")
-            sk.add_column("Level",    style="white")
-            sk.add_column("Auto",     justify="right")
-            sk.add_column("Accuracy", justify="right")
-            sk.add_column("Samples",  justify="right")
-            for s in status["top_skills"]:
-                sc2 = SKILL_COLORS.get(s["skill"], "white")
-                sk.add_row(
-                    s["module"], s["pattern"][:16],
-                    f"[{sc2}]{s['skill']}[/{sc2}]",
-                    f"{s['automaticity']:.3f}",
-                    f"{s['accuracy']:.3f}",
-                    str(s["samples"])
-                )
-            console.print(sk)
-
-        if status["top_routines"]:
-            console.print(Rule("[dim]Consolidated Routines[/dim]"))
-            for r in status["top_routines"]:
-                console.print(
-                    f"  [bright_green]★[/bright_green]  "
-                    f"[cyan]{r['module']:<14}[/cyan]  "
-                    f"[dim]{r['pattern']:<20}[/dim]  "
-                    f"speed+{r['speed_bonus']:.2f}  "
-                    f"err-{r['error_reduction']:.2f}"
-                )
+        # Forward model latencies
+        console.print(Rule("[dim]Learned Latencies[/dim]"))
+        lat_table = Table(box=box.SIMPLE, show_header=False)
+        lat_table.add_column("module", style="dim", width=16)
+        lat_table.add_column("predicted")
+        for mod, ms in sorted(
+            status["forward_model"]["top_latencies"].items(),
+            key=lambda x: x[1], reverse=True
+        ):
+            bar = "█" * int(min(ms/10, 20)) + f" {ms:.1f}ms"
+            lat_table.add_row(mod, bar)
+        console.print(lat_table)
 
 
 # ─── HTTP API ─────────────────────────────────────────────────────────────────
@@ -1126,43 +1209,43 @@ def run_api(cb: ForgeCerebellum):
     if not HAS_FLASK: return
     app = Flask(__name__)
 
-    @app.route("/process", methods=["POST"])
-    def process():
-        body = request.json or {}
-        return jsonify(cb.process(
-            body.get("signal", {}),
-            body.get("module_outputs", {})
+    @app.route("/before", methods=["POST"])
+    def before():
+        data = request.json or {}
+        return jsonify(cb.before_action(
+            data.get("module",""),
+            data.get("action",""),
+            data.get("context",{})
         ))
+
+    @app.route("/after", methods=["POST"])
+    def after():
+        data = request.json or {}
+        return jsonify(cb.after_action(
+            data.get("module",""),
+            data.get("actual_ms", 0.0),
+            data.get("success", True),
+            data.get("outcome","success")
+        ))
+
+    @app.route("/observe", methods=["POST"])
+    def observe():
+        data  = request.json or {}
+        out   = cb.observe_pipeline(
+            data.get("timings",{}),
+            data.get("success", True)
+        )
+        return jsonify({
+            "smoothness":        out.overall_smoothness,
+            "rhythm":            out.pipeline_rhythm,
+            "dysmetric":         out.dysmetric_modules,
+            "corrections":       out.timing_corrections,
+            "smoothing_weights": out.smoothing_weights,
+        })
 
     @app.route("/status", methods=["GET"])
     def status():
         return jsonify(cb.get_status())
-
-    @app.route("/models", methods=["GET"])
-    def models():
-        rows = cb.db.get_models(1)
-        return jsonify([{
-            "module": r[0], "pattern": r[1], "samples": r[2],
-            "accuracy": r[3], "skill": r[4],
-            "automaticity": r[5], "error_mean": r[6]
-        } for r in rows])
-
-    @app.route("/corrections", methods=["GET"])
-    def corrections():
-        rows = cb.db.get_recent_corrections(15)
-        return jsonify([{
-            "cycle": r[0], "module": r[1],
-            "raw": r[2], "corrected": r[3],
-            "delta": r[4], "type": r[5], "accuracy": r[6]
-        } for r in rows])
-
-    @app.route("/timing", methods=["GET"])
-    def timing():
-        rows = cb.db.get_timing_history(10)
-        return jsonify([{
-            "cycle": r[0], "state": r[1],
-            "jitter": r[2], "corrected": bool(r[3])
-        } for r in rows])
 
     app.run(host="0.0.0.0", port=API_PORT, debug=False)
 
